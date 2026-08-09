@@ -1,0 +1,28 @@
+2: import { CheckCircle, MessageSquare, Star, Loader2, MapPin } from 'lucide-react';
+52:   options: { label: string; value: T }[];
+86: function StarRating({
+106:             <Star
+201:           <h2 className="text-2xl font-bold text-slate-800 mb-2">Thank You!</h2>
+224:           <div className="flex items-start gap-4 mt-2">
+232:               <h1 className="text-2xl font-bold text-slate-900 leading-tight">
+261:               placeholder="Your answer"
+264:               className="w-full border-0 border-b-2 border-slate-200 focus:border-cyan-500 outline-none py-2.5 text-slate-800 placeholder-slate-300 bg-transparent transition-colors text-base"
+275:               options={SERVICES.map(s => ({ label: s.label, value: s.id }))}
+280:           {/* Satisfaction ratings */}
+282:             <SectionLabel icon={Star} text="Service Ratings" />
+289:                 <StarRating
+299:                 <StarRating
+315:               options={[{ label: 'Yes', value: 'Yes' }, { label: 'No', value: 'No' }]}
+329:                 { label: 'Yes', value: 'Yes' },
+330:                 { label: 'No', value: 'No' },
+331:                 { label: 'Maybe', value: 'Maybe' },
+346:                 { label: 'Yes', value: 'Yes' },
+347:                 { label: 'No', value: 'No' },
+348:                 { label: 'Maybe', value: 'Maybe' },
+362:               placeholder="Your answer"
+366:               className="w-full border border-slate-200 rounded-xl p-3 text-sm text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent placeholder-slate-300"
+377:               placeholder="Your answer"
+381:               className="w-full border border-slate-200 rounded-xl p-3 text-sm text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent placeholder-slate-300"
+394:                 { label: 'Yes, with my name', value: 'Yes, with my name' },
+395:                 { label: 'Yes, but anonymously', value: 'Yes, but anonymously' },
+396:                 { label: 'No', value: 'No' },
