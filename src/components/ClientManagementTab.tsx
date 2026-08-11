@@ -8,7 +8,7 @@ import {
   MessageSquare, CreditCard, Clock, Tag, ArrowLeft, TrendingUp, Building2,
   Activity as ActivityIcon, Syringe, Heart, FlaskConical, BadgeCheck,
   ShieldAlert, DollarSign, CalendarClock, UserCircle, FileCheck,
-  Video, ExternalLink, ClipboardCheck, PenLine,
+  Video, ExternalLink, ClipboardCheck,
 } from 'lucide-react';
 import { supabase, type Client, type ClientProfile, type ClientDocument, type DocumentType } from '../lib/supabase';
 import { resolveSignatureUrl } from '../lib/signatures';
@@ -938,7 +938,7 @@ function ConsentViewerModal({ record, onClose }: { record: ConsentRecord; onClos
 type WorkspaceTab = 'overview' | 'personal' | 'medical' | 'appointments' | 'feedback' | 'documents' | 'timeline';
 
 function ClientWorkspace({
-  client, profile, unified, documents, appointments, feedbacks, consentRecords, branches, canManage, canViewSensitive, onClose, onEdit, onUploadDoc, onDocClick,
+  client, profile, unified, documents, appointments, feedbacks, branches, canManage, canViewSensitive, onClose, onEdit, onUploadDoc, onDocClick,
 }: {
   client: FullClient;
   profile: ClientProfile | null;
@@ -946,7 +946,6 @@ function ClientWorkspace({
   documents: DocRow[];
   appointments: AppointmentSummary[];
   feedbacks: FeedbackSummary[];
-  consentRecords: ConsentRecord[];
   branches: Branch[];
   canManage: boolean;
   canViewSensitive: boolean;
@@ -1182,49 +1181,6 @@ function ClientWorkspace({
               </div>
               <DetailField icon={Calendar} label="Consent Date" value={(u?.consent_date ?? profile?.consent_date) ? formatTs((u?.consent_date ?? profile?.consent_date) as string) : null} />
             </SectionBlock>
-
-            <div className="lg:col-span-2">
-              <SectionBlock title="Signed Consent History" icon={FileCheck}>
-                {consentRecords.length === 0 ? (
-                  <div className="text-center py-8">
-                    <FileCheck className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                    <p className="text-sm text-slate-400">No signed consent history available.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {consentRecords.map(rec => (
-                      <div key={rec.id} className="border border-slate-200 rounded-xl p-4 bg-slate-50/50">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                          <DetailField icon={Droplets} label="Treatment / Service" value={rec.appointment?.service ?? rec.service} />
-                          <DetailField icon={Calendar} label="Appointment Date" value={rec.appointment ? formatTs(rec.appointment.scheduled_date) : null} />
-                          <DetailField icon={Clock} label="Date & Time Signed" value={formatDateTime(rec.signed_at)} />
-                          <DetailField icon={User} label="Registered Nurse" value={rec.appointment?.nurse_name} />
-                          <DetailField icon={BadgeCheck} label="RN License Number" value="—" />
-                          <div>
-                            <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1.5 flex items-center gap-1.5">
-                              <PenLine className="w-3.5 h-3.5" /> Client Signature Preview
-                            </p>
-                            {rec.signature_data ? (
-                              <SignatureImage signatureData={rec.signature_data} className="h-16 border border-slate-200 rounded-lg bg-white object-contain p-1" />
-                            ) : (
-                              <span className="text-sm text-slate-400">—</span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex gap-2 mt-3 pt-3 border-t border-slate-100">
-                          <button onClick={() => setViewConsent(rec)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-700 border border-teal-200 bg-teal-50 rounded-lg hover:bg-teal-100 transition-colors">
-                            <Eye className="w-3.5 h-3.5" /> View Full Consent
-                          </button>
-                          <button onClick={() => downloadConsent(rec)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-600 border border-slate-200 bg-white rounded-lg hover:bg-slate-50 transition-colors">
-                            <Download className="w-3.5 h-3.5" /> Download Consent
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </SectionBlock>
-            </div>
 
             <SectionBlock title="Internal Notes" icon={StickyNote}>
               <DetailField icon={StickyNote} label="General Notes" value={u?.general_notes ?? profile?.general_notes} />
@@ -1674,7 +1630,6 @@ export default function ClientManagementTab({ canManage = false, canViewSensitiv
   const [viewDocs, setViewDocs] = useState<DocRow[]>([]);
   const [viewAppointments, setViewAppointments] = useState<AppointmentSummary[]>([]);
   const [viewFeedbacks, setViewFeedbacks] = useState<FeedbackSummary[]>([]);
-  const [viewConsents, setViewConsents] = useState<ConsentRecord[]>([]);
   const [showDocUpload, setShowDocUpload] = useState(false);
   const [viewDoc, setViewDoc] = useState<DocRow | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -1714,7 +1669,6 @@ export default function ClientManagementTab({ canManage = false, canViewSensitiv
     setViewDocs([]);
     setViewAppointments([]);
     setViewFeedbacks([]);
-    setViewConsents([]);
 
     const [unified, docsRes, apptRes] = await Promise.all([
       loadUnifiedClientProfile(c.id),
@@ -1807,7 +1761,6 @@ export default function ClientManagementTab({ canManage = false, canViewSensitiv
         appointment: appt ? { scheduled_date: appt.scheduled_date, scheduled_time: appt.scheduled_time, service: appt.service, nurse_name: appt.nurse_name } : null,
       };
     });
-    setViewConsents(consentRecords);
 
     // Attach each appointment's consent so the history can show signed/missing.
     // A signed record wins over a pending one for the same appointment.
@@ -1915,7 +1868,6 @@ export default function ClientManagementTab({ canManage = false, canViewSensitiv
           documents={viewDocs}
           appointments={viewAppointments}
           feedbacks={viewFeedbacks}
-          consentRecords={viewConsents}
           branches={branches}
           canManage={canManage}
           canViewSensitive={canViewSensitive}
