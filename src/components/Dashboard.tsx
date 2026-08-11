@@ -3465,7 +3465,7 @@ export default function Dashboard({ userEmail, memberRole, memberBranchId, permi
             {tab === 'overview' && <OperationsOverview userEmail={userEmail} permissions={permissions} onNavigate={(t) => setTab(t as Tab)} />}
             {tab === 'bookings' && <BookingsTab userEmail={userEmail} canViewSensitive={can('clients.view')} />}
             {tab === 'feedback' && <FeedbackTab userEmail={userEmail} />}
-            {tab === 'client_management' && can('clients.view') && <ClientManagementTab canManage={can('clients.manage')} canViewSensitive={can('clients.view')} />}
+            {tab === 'client_management' && can('clients.view') && <ClientManagementTab canManage={can('clients.manage')} canViewSensitive={can('clients.view')} canDelete={can('clients.delete')} />}
             {tab === 'operations' && <OperationsTab canManage={can('appointments.delete')} userEmail={userEmail} canViewSensitive={can('clients.view')} />}
             {tab === 'team' && can('team.manage') && <TeamMembersTab canAdd={can('team.add')} canEdit={can('team.edit')} canDelete={can('team.delete')} />}
             {tab === 'settings' && can('settings.manage') && <SettingsTab />}

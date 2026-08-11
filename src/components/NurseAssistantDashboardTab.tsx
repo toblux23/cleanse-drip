@@ -35,6 +35,9 @@ interface AppointmentLite {
   scheduled_date: string;
   scheduled_time: string;
   service: string | null;
+  catalog_item_id: string | null;
+  inventory_deducted_at: string | null;
+  inventory_deduction_issues: string[] | null;
   status: string;
   payment_status: string;
   payment_amount: number | null;
@@ -88,7 +91,7 @@ interface Props {
   permissions: Set<string>;
 }
 
-export default function NurseAssistantDashboardTab({ userEmail, memberBranchId }: Props) {
+export default function NurseAssistantDashboardTab({ userEmail, memberBranchId, permissions }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [bookings, setBookings] = useState<AssistantBooking[]>([]);
@@ -104,6 +107,42 @@ export default function NurseAssistantDashboardTab({ userEmail, memberBranchId }
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentAppointment, setPaymentAppointment] = useState<AppointmentLite | null>(null);
   const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
+
+  // ─── Availed service editing ───────────────────────────────────────────────
+  // Mirrors the nurse dashboard: the assistant can correct the availed service
+  // on site when the client changes their mind.
+  const canEditService = permissions.has('appointments.edit_service');
+  const [catalogOptions, setCatalogOptions] = useState<{ id: string; name: string }[]>([]);
+  const [savingService, setSavingService] = useState(false);
+
+  useEffect(() => {
+    if (!canEditService) return;
+    (async () => {
+      const { data, error: catErr } = await supabase
+        .from('catalog_items')
+        .select('id, name')
+        .eq('is_active', true)
+        .order('display_order', { ascending: true });
+      if (catErr) { console.error('[Service Editor] Failed to load catalog items:', catErr.message); return; }
+      setCatalogOptions(data ?? []);
+    })();
+  }, [canEditService]);
+
+  // Writes both the FK and the display text, matching the nurse dashboard.
+  async function updateApptService(appt: AppointmentLite, catalogItemId: string) {
+    const picked = catalogOptions.find(c => c.id === catalogItemId);
+    if (!picked || picked.id === appt.catalog_item_id) return;
+
+    setSavingService(true);
+    const { error: updateErr } = await supabase
+      .from('appointments')
+      .update({ catalog_item_id: picked.id, service: picked.name })
+      .eq('id', appt.id);
+    setSavingService(false);
+
+    if (updateErr) { setError(`Failed to update the service: ${updateErr.message}`); return; }
+    load();
+  }
 
   // Load user id
   useEffect(() => {
@@ -330,6 +369,9 @@ export default function NurseAssistantDashboardTab({ userEmail, memberBranchId }
         scheduled_date: booking.preferred_date ?? '',
         scheduled_time: booking.preferred_time ? String(booking.preferred_time) : '',
         service: booking.services_requested?.length ? booking.services_requested.join(', ') : null,
+        catalog_item_id: null,
+        inventory_deducted_at: null,
+        inventory_deduction_issues: null,
         status: '',
         payment_status: 'pending',
         payment_amount: null,
@@ -440,6 +482,10 @@ export default function NurseAssistantDashboardTab({ userEmail, memberBranchId }
           onAdvanceAppointment={advanceAppointmentStatus}
           onRecordPayment={openPayment}
           statusUpdating={statusUpdating}
+          canEditService={canEditService}
+          catalogOptions={catalogOptions}
+          savingService={savingService}
+          onChangeService={updateApptService}
         />
       )}
 
@@ -607,6 +653,7 @@ function BookingsList({
 
 function BookingDetail({
   booking, appointment, memberLookup, userEmail, onBack, onStatusUpdate, onAdvanceAppointment, onRecordPayment, statusUpdating,
+  canEditService, catalogOptions, savingService, onChangeService,
 }: {
   booking: AssistantBooking;
   appointment: AppointmentLite | null;
@@ -617,6 +664,10 @@ function BookingDetail({
   onAdvanceAppointment: (b: AssistantBooking) => void;
   onRecordPayment: (b: AssistantBooking) => void;
   statusUpdating: string | null;
+  canEditService: boolean;
+  catalogOptions: { id: string; name: string }[];
+  savingService: boolean;
+  onChangeService: (appt: AppointmentLite, catalogItemId: string) => void;
 }) {
   const [showFeedbackQr, setShowFeedbackQr] = useState(false);
   const status = (booking.assistant_status ?? 'Assigned') as AssistantStatus;
@@ -682,6 +733,19 @@ function BookingDetail({
               <DetailField icon={Users} label="Pax" value={booking.pax?.toString()} />
             </div>
           </SectionBlock>
+
+          {/* Availed Service — editable on site when the client changes their mind */}
+          {appointment && (
+            <SectionBlock title="Availed Service">
+              <AssistantServiceEditor
+                appt={appointment}
+                canEdit={canEditService}
+                options={catalogOptions}
+                saving={savingService}
+                onChange={(catalogItemId) => onChangeService(appointment, catalogItemId)}
+              />
+            </SectionBlock>
+          )}
 
           {/* Client Contact */}
           <SectionBlock title="Client Contact">
@@ -822,6 +886,77 @@ function BookingDetail({
 }
 
 // ─── Shared UI Components (matching Nurse Dashboard style) ─────────────────────
+
+// ─── Availed Service Editor (assistant) ──────────────────────────────────────
+// Same contract as the nurse dashboard's ServiceEditor: locked once the
+// appointment is completed or cancelled, since the service is then part of the
+// billing and inventory record.
+
+function AssistantServiceEditor({ appt, canEdit, options, saving, onChange }: {
+  appt: AppointmentLite;
+  canEdit: boolean;
+  options: { id: string; name: string }[];
+  saving: boolean;
+  onChange: (catalogItemId: string) => void;
+}) {
+  const locked = appt.status === 'completed' || appt.status === 'cancelled';
+  const current = appt.service ?? null;
+  const unlinked = !appt.catalog_item_id && !!current;
+
+  if (locked || !canEdit) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Droplets className="w-4 h-4 text-teal-600" />
+          <span className="text-sm font-semibold text-slate-800">{current ?? 'No service recorded'}</span>
+        </div>
+        <p className="text-xs text-slate-400">
+          {locked
+            ? `Service is locked once the appointment is ${appt.status}.`
+            : 'You do not have permission to change the availed service.'}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2.5">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+        <select
+          value={appt.catalog_item_id ?? ''}
+          disabled={saving}
+          onChange={e => { if (e.target.value) onChange(e.target.value); }}
+          className="flex-1 px-3.5 py-2.5 text-sm bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-400 transition-all disabled:opacity-50"
+        >
+          <option value="">{current ? `${current} (not linked to catalog)` : 'Select a service'}</option>
+          {options.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+        </select>
+        {saving && <span className="text-xs text-slate-400">Saving...</span>}
+      </div>
+
+      {unlinked && (
+        <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+          This service is free text from an older booking and is not linked to the catalog, so inventory cannot be deducted for it. Re-select it above to link it.
+        </p>
+      )}
+
+      <p className="text-[11px] text-slate-400">
+        Changing the service updates what the client is billed and what is deducted from inventory.
+      </p>
+
+      {(appt.inventory_deduction_issues?.length ?? 0) > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3">
+          <p className="text-xs font-bold text-amber-800 mb-1.5">Inventory was not fully deducted</p>
+          <ul className="space-y-1">
+            {(appt.inventory_deduction_issues ?? []).map((issue, i) => (
+              <li key={i} className="text-xs text-amber-700 leading-relaxed">• {issue}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function SectionBlock({ title, children }: { title: string; children: React.ReactNode }) {
   return <div><p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-3">{title}</p><div className="bg-slate-50 rounded-2xl p-5">{children}</div></div>;

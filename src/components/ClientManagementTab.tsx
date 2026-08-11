@@ -11,6 +11,8 @@ import {
   Video, ExternalLink, ClipboardCheck, PenLine,
 } from 'lucide-react';
 import { supabase, type Client, type ClientProfile, type ClientDocument, type DocumentType } from '../lib/supabase';
+import { resolveSignatureUrl } from '../lib/signatures';
+import SignatureImage from './SignatureImage';
 import { loadUnifiedClientProfile, type UnifiedClientProfile } from '../lib/clientProfile';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -35,15 +37,10 @@ function formatTime(t: string) {
   return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
 }
 
-function resolveSignatureSrc(signatureData: string | null): string | null {
-  if (!signatureData) return null;
-  if (signatureData.startsWith('data:')) return signatureData;
-  const { data } = supabase.storage.from('client-documents').getPublicUrl(signatureData);
-  return data.publicUrl;
-}
-
-function downloadConsent(record: ConsentRecord) {
-  const url = resolveSignatureSrc(record.signature_data);
+// `client-documents` is a private bucket, so uploaded signatures need a signed
+// URL rather than a public one. See src/lib/signatures.ts.
+async function downloadConsent(record: ConsentRecord) {
+  const url = await resolveSignatureUrl(record.signature_data);
   if (!url) return;
   const a = document.createElement('a');
   a.href = url;
@@ -910,7 +907,7 @@ function ConsentViewerModal({ record, onClose }: { record: ConsentRecord; onClos
           {record.signature_data && (
             <div className="border-t border-slate-100 pt-4">
               <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-2">Client Signature</p>
-              <img src={resolveSignatureSrc(record.signature_data)} alt="Client signature" className="max-h-40 border border-slate-200 rounded-xl bg-white object-contain p-2" />
+              <SignatureImage signatureData={record.signature_data} className="max-h-40 border border-slate-200 rounded-xl bg-white object-contain p-2" />
             </div>
           )}
           <button onClick={() => downloadConsent(record)} className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-bold text-slate-600 border border-slate-200 bg-white hover:bg-slate-50 rounded-xl transition-colors">
@@ -1194,7 +1191,7 @@ function ClientWorkspace({
                               <PenLine className="w-3.5 h-3.5" /> Client Signature Preview
                             </p>
                             {rec.signature_data ? (
-                              <img src={resolveSignatureSrc(rec.signature_data)} alt="Client signature" className="h-16 border border-slate-200 rounded-lg bg-white object-contain p-1" />
+                              <SignatureImage signatureData={rec.signature_data} className="h-16 border border-slate-200 rounded-lg bg-white object-contain p-1" />
                             ) : (
                               <span className="text-sm text-slate-400">—</span>
                             )}
@@ -1540,7 +1537,19 @@ function TimelineEvent({ icon: Icon, date, title, note }: { icon: React.ElementT
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export default function ClientManagementTab({ canManage = false, canViewSensitive = true }: { canManage?: boolean; canViewSensitive?: boolean }) {
+// Everything destroyed by deleting a client. All of these cascade at the database
+// level (see 20260809150000_client_delete_cascades_all_records), so the delete
+// always succeeds — these counts exist to show what is about to be lost.
+const CLIENT_CASCADE_TABLES: { table: string; label: string }[] = [
+  { table: 'appointments', label: 'appointment' },
+  { table: 'orders', label: 'order' },
+  { table: 'payments', label: 'payment' },
+  { table: 'consultation_requests', label: 'consultation request' },
+  { table: 'client_consent_records', label: 'signed consent form' },
+  { table: 'client_treatment_notes', label: 'treatment note' },
+];
+
+export default function ClientManagementTab({ canManage = false, canViewSensitive = true, canDelete = false }: { canManage?: boolean; canViewSensitive?: boolean; canDelete?: boolean }) {
   const [clients, setClients] = useState<FullClient[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1551,6 +1560,14 @@ export default function ClientManagementTab({ canManage = false, canViewSensitiv
   const [editTarget, setEditTarget] = useState<Client | null>(null);
   const [editProfile, setEditProfile] = useState<ClientProfile | null>(null);
   const [viewTarget, setViewTarget] = useState<FullClient | null>(null);
+  // Deletion. Mirrors the catalog delete flow: check real dependencies first,
+  // require the name typed back, and offer deactivation as the safe alternative.
+  const [deleteTarget, setDeleteTarget] = useState<FullClient | null>(null);
+  const [deleteConfirmName, setDeleteConfirmName] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteBlockers, setDeleteBlockers] = useState<string[] | null>(null);
+  const [checkingDeps, setCheckingDeps] = useState(false);
   const [viewProfile, setViewProfile] = useState<ClientProfile | null>(null);
   const [viewUnified, setViewUnified] = useState<UnifiedClientProfile | null>(null);
   const [viewDocs, setViewDocs] = useState<DocRow[]>([]);
@@ -1682,6 +1699,65 @@ export default function ClientManagementTab({ canManage = false, canViewSensitiv
     setEditTarget(c);
     setEditProfile(p);
     setViewTarget(null);
+  }
+
+  // Counts what the cascade will destroy, so the confirmation can state it
+  // plainly instead of asking the user to delete an unknown amount of history.
+  async function countClientRecords(clientId: string): Promise<string[]> {
+    const found = await Promise.all(CLIENT_CASCADE_TABLES.map(async b => {
+      const { count, error: depErr } = await supabase
+        .from(b.table)
+        .select('id', { count: 'exact', head: true })
+        .eq('client_id', clientId);
+      if (depErr) return `${b.label} records could not be counted (${depErr.message})`;
+      const n = count ?? 0;
+      return n > 0 ? `${n} ${b.label}${n === 1 ? '' : 's'}` : null;
+    }));
+    return found.filter((f): f is string => f !== null);
+  }
+
+  async function openDelete(c: FullClient) {
+    setDeleteTarget(c);
+    setDeleteConfirmName('');
+    setDeleteError(null);
+    setDeleteBlockers(null);
+    setCheckingDeps(true);
+    setDeleteBlockers(await countClientRecords(c.id));
+    setCheckingDeps(false);
+  }
+
+  function closeDelete() {
+    setDeleteTarget(null);
+    setDeleteConfirmName('');
+    setDeleteError(null);
+    setDeleteBlockers(null);
+  }
+
+  async function handleDelete(c: FullClient) {
+    if (!canDelete) return;
+    setDeleting(true);
+    setDeleteError(null);
+
+    // The database cascades everything belonging to this client.
+    const { error: delErr } = await supabase.from('clients').delete().eq('id', c.id);
+    setDeleting(false);
+
+    if (delErr) {
+      console.error('Client delete failed:', delErr);
+      setDeleteError(`Failed to delete this client: ${delErr.message}`);
+      return;
+    }
+
+    closeDelete();
+    setViewTarget(null);
+    load();
+  }
+
+  async function deactivateClient(c: FullClient) {
+    const { error: updErr } = await supabase.from('clients').update({ status: 'inactive' }).eq('id', c.id);
+    if (updErr) { setDeleteError(`Failed to deactivate: ${updErr.message}`); return; }
+    closeDelete();
+    load();
   }
 
   const filtered = clients.filter(c => {
@@ -1895,6 +1971,12 @@ export default function ClientManagementTab({ canManage = false, canViewSensitiv
                       <Pencil className="w-3.5 h-3.5" /> <span className="lg:hidden">Edit</span>
                     </button>
                   )}
+                  {canDelete && (
+                    <button onClick={() => openDelete(client)} title="Delete client"
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-red-500 border border-red-200 bg-red-50 rounded-lg hover:bg-red-100 hover:text-red-700 transition-colors">
+                      <Trash2 className="w-3.5 h-3.5" /> <span className="lg:hidden">Delete</span>
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -1920,6 +2002,21 @@ export default function ClientManagementTab({ canManage = false, canViewSensitiv
         <ClientFormModal mode="edit" initial={editTarget} initialProfile={editProfile} branches={branches} canManage={canManage}
           onClose={() => setEditTarget(null)} onSaved={handleSaved} />
       )}
+
+      {deleteTarget && (
+        <DeleteClientModal
+          client={deleteTarget}
+          blockers={deleteBlockers}
+          checking={checkingDeps}
+          confirmName={deleteConfirmName}
+          onConfirmNameChange={setDeleteConfirmName}
+          deleting={deleting}
+          error={deleteError}
+          onCancel={closeDelete}
+          onConfirm={() => handleDelete(deleteTarget)}
+          onDeactivate={() => deactivateClient(deleteTarget)}
+        />
+      )}
       {showDocUpload && viewTarget && canManage && (
         <DocumentUploadModal client={viewTarget} onClose={() => setShowDocUpload(false)}
           onSaved={() => {
@@ -1930,6 +2027,114 @@ export default function ClientManagementTab({ canManage = false, canViewSensitiv
               .then(({ data }) => setViewDocs((data ?? []) as DocRow[]));
           }} />
       )}
+    </div>
+  );
+}
+
+// ─── Delete Client Modal ─────────────────────────────────────────────────────
+// Deleting a client is permanent and cannot be undone, so this asks for the name
+// to be typed back. When clinical or financial records reference the client the
+// delete is blocked outright and deactivation is offered instead — that keeps
+// history intact while stopping the client appearing in future workflows.
+
+function DeleteClientModal({
+  client, blockers, checking, confirmName, onConfirmNameChange, deleting, error, onCancel, onConfirm, onDeactivate,
+}: {
+  client: { id: string; full_name: string; status: string };
+  blockers: string[] | null;
+  checking: boolean;
+  confirmName: string;
+  onConfirmNameChange: (v: string) => void;
+  deleting: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+  onDeactivate: () => void;
+}) {
+  const impact = blockers ?? [];
+  const nameMatches = confirmName.trim().toLowerCase() === client.full_name.trim().toLowerCase();
+  const canConfirm = !checking && nameMatches && !deleting;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onCancel}>
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-100">
+          <div className="p-2 bg-red-50 rounded-xl"><AlertTriangle className="w-5 h-5 text-red-500" /></div>
+          <h3 className="text-base font-bold text-slate-800">Delete Client</h3>
+          <button onClick={onCancel} className="ml-auto p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {checking ? (
+            <div className="flex items-center gap-2 text-sm text-slate-400">
+              <Loader2 className="w-4 h-4 animate-spin" /> Counting linked records...
+            </div>
+          ) : (
+            <>
+              <p className="text-sm text-slate-600 leading-relaxed">
+                You are about to permanently delete <span className="font-bold text-slate-800">'{client.full_name}'</span> and everything belonging to them. This cannot be undone.
+              </p>
+
+              {impact.length > 0 ? (
+                <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+                  <p className="text-xs font-bold text-red-800 mb-2">These records will be destroyed:</p>
+                  <ul className="space-y-1">
+                    {impact.map((b, i) => (
+                      <li key={i} className="text-sm text-red-700 font-semibold">• {b}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                  This client has no appointments, billing, consultations, consent forms, or treatment notes. Only the client record and profile will be removed.
+                </p>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1.5">Type the client's full name to confirm</label>
+                <input
+                  value={confirmName}
+                  onChange={e => onConfirmNameChange(e.target.value)}
+                  placeholder={client.full_name}
+                  autoFocus
+                  className="w-full px-3.5 py-2.5 text-sm bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                />
+              </div>
+
+              {client.status === 'active' && (
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Deactivating instead keeps all history and removes the client from future workflows.
+                </p>
+              )}
+            </>
+          )}
+
+          {error && (
+            <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>
+          )}
+        </div>
+
+        <div className="flex gap-3 px-5 py-4 border-t border-slate-100">
+          <button onClick={onCancel} className="flex-1 px-4 py-2.5 text-sm font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">
+            Cancel
+          </button>
+          {client.status === 'active' && (
+            <button onClick={onDeactivate} disabled={deleting}
+              className="flex-1 px-4 py-2.5 text-sm font-bold text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100 rounded-xl transition-colors disabled:opacity-40">
+              Deactivate
+            </button>
+          )}
+          <button
+            onClick={onConfirm}
+            disabled={!canConfirm}
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {deleting ? <><Loader2 className="w-4 h-4 animate-spin" /> Deleting...</> : <><Trash2 className="w-4 h-4" /> Delete Permanently</>}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

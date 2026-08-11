@@ -7,7 +7,7 @@ import {
   Bell, BellRing, Inbox, CheckCheck, Archive, QrCode, Copy, ClipboardCheck,
   PenLine, ShieldCheck, AlertTriangle, Eye, MessageSquare, Send,
   Settings2, Hourglass, Lock, Ban, ChevronDown, Plus, Stethoscope as StethoscopeIcon,
-  Wallet, Zap, Navigation, CalendarDays, TrendingUp, Receipt, Play, Truck, Upload,
+  Wallet, Zap, Navigation, CalendarDays, TrendingUp, Receipt, Play, Truck, Upload, Download,
 } from 'lucide-react';
 import {
   supabase, type Appointment, type AppointmentStatus, type ClientBooking,
@@ -24,6 +24,8 @@ import {
   getWfStage, WF_STAGE_CFG, WF_STAGE_ORDER, wfDuration, wfFmtTs,
   type WfAppointment,
 } from './Dashboard';
+import { resolveSignatureUrl } from '../lib/signatures';
+import SignatureImage from './SignatureImage';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -411,6 +413,9 @@ export default function NurseDashboardTab({ userEmail, memberRole, memberBranchI
   const [dashboardNotes, setDashboardNotes] = useState<ClientTreatmentNote[]>([]);
 
   const isSuperAdmin = memberRole === 'superadmin';
+  // `||` not `??`: permissions is always a real Set, so `.has()` returns false
+  // rather than undefined and a `??` fallback would never fire.
+  const canEditService = (permissions?.has('appointments.edit_service') ?? false) || isSuperAdmin;
   const canManageBuffer = permissions?.has('settings.manage') ?? isSuperAdmin;
   const effectiveBranch = isSuperAdmin ? selectedBranch : (memberBranchId ?? 'all');
 
@@ -587,6 +592,12 @@ export default function NurseDashboardTab({ userEmail, memberRole, memberBranchI
     load();
     if (detailAppt?.id === appt.id) setDetailAppt({ ...appt, status: cfg.nextStatus, [cfg.tsField]: now });
 
+    // Starting treatment fires trg_treatment_inventory server-side. Re-read the
+    // row so any deduction problem it recorded is shown rather than swallowed.
+    if (cfg.nextStatus === 'in_treatment') {
+      await refreshDeductionState(appt.id);
+    }
+
     // Send Thank You email only when transitioning to completed
     if (cfg.nextStatus === 'completed' && appt.status !== 'completed') {
       const clientEmail = appt.clients?.email ?? null;
@@ -617,91 +628,67 @@ export default function NurseDashboardTab({ userEmail, memberRole, memberBranchI
       }
     }
 
-    // Automatic inventory deduction when treatment is marked Completed
-    if (cfg.nextStatus === 'completed' && appt.status !== 'completed') {
-      deductInventoryForAppointment(appt);
-    }
+    // Inventory deduction is handled server-side by trg_treatment_inventory,
+    // which fires when the appointment enters 'in_treatment'. It used to run
+    // here as well as in the database trigger, deducting twice.
   }
 
-  async function deductInventoryForAppointment(appt: AppointmentRow) {
-    const serviceName = appt.service?.trim();
-    if (!serviceName) {
-      console.warn('[Inventory Deduct] No service on appointment', appt.id);
-      return;
-    }
+  // Deduction runs in a database trigger, so its outcome is only visible after
+  // re-reading the row. Called after treatment starts and after a service change.
+  async function refreshDeductionState(apptId: string) {
+    const { data, error: readErr } = await supabase
+      .from('appointments')
+      .select('inventory_deducted_at, inventory_deducted_recipe_id, inventory_deduction_issues')
+      .eq('id', apptId)
+      .maybeSingle();
+    if (readErr || !data) return;
+    setDetailAppt(prev => (prev && prev.id === apptId ? { ...prev, ...data } : prev));
+  }
 
-    try {
-      // Duplicate protection: check if inventory_usage already records a deduction for this appointment
-      const { data: existingUsage } = await supabase
-        .from('inventory_usage')
-        .select('id')
-        .eq('appointment_id', appt.id)
-        .limit(1);
-      if (existingUsage && existingUsage.length > 0) {
-        console.info('[Inventory Deduct] Already deducted for appointment', appt.id);
-        return;
-      }
+  // ─── Availed service editing ───────────────────────────────────────────────
+  // Clients change their mind on site. The nurse/assistant corrects the service
+  // here rather than routing back through an admin.
+  const [catalogOptions, setCatalogOptions] = useState<{ id: string; name: string; item_type: string }[]>([]);
+  const [savingService, setSavingService] = useState(false);
 
-      // Look up the treatment recipe by matching the service name to the recipe's treatment_name
-      const { data: recipe, error: recipeErr } = await supabase
-        .from('treatment_recipes')
-        .select('id, treatment_name')
-        .ilike('treatment_name', serviceName)
+  useEffect(() => {
+    if (!canEditService) return;
+    (async () => {
+      const { data, error: catErr } = await supabase
+        .from('catalog_items')
+        .select('id, name, item_type')
         .eq('is_active', true)
-        .maybeSingle();
+        .order('display_order', { ascending: true });
+      if (catErr) { console.error('[Service Editor] Failed to load catalog items:', catErr.message); return; }
+      setCatalogOptions(data ?? []);
+    })();
+  }, [canEditService]);
 
-      if (recipeErr || !recipe) {
-        console.info(`[Inventory Deduct] No recipe found for service "${serviceName}" on appointment ${appt.id}. Skipping deduction.`);
-        return;
-      }
+  // Writes both the FK and the display text. `service` stays populated so every
+  // existing read path (emails, reports, list rows) keeps working unchanged.
+  async function updateApptService(appt: AppointmentRow, catalogItemId: string) {
+    const picked = catalogOptions.find(c => c.id === catalogItemId);
+    if (!picked) { setError('That service is no longer available. Refresh and try again.'); return; }
+    if (picked.id === appt.catalog_item_id) return;
 
-      // Load recipe items (the inventory components to deduct)
-      const { data: recipeItems, error: itemsErr } = await supabase
-        .from('treatment_recipe_items')
-        .select('product_id, quantity, unit_of_measure')
-        .eq('recipe_id', recipe.id);
+    setSavingService(true);
+    const { error: updateErr } = await supabase
+      .from('appointments')
+      .update({ catalog_item_id: picked.id, service: picked.name })
+      .eq('id', appt.id);
+    setSavingService(false);
 
-      if (itemsErr || !recipeItems || recipeItems.length === 0) {
-        console.info(`[Inventory Deduct] Recipe "${recipe.treatment_name}" has no items. Skipping deduction.`);
-        return;
-      }
+    if (updateErr) { setError(`Failed to update the service: ${updateErr.message}`); return; }
 
-      // Deduct each inventory component using the existing FIFO RPC
-      const branchId = appt.branch_id ?? null;
-      for (const item of recipeItems) {
-        const deductQty = Number(item.quantity);
-        if (!deductQty || deductQty <= 0) continue;
-
-        const { error: rpcErr } = await supabase.rpc('deduct_inventory_fifo', {
-          p_product_id: item.product_id,
-          p_quantity: deductQty,
-          p_branch_id: branchId,
-          p_reference_type: 'appointment',
-          p_reference_id: appt.id,
-          p_reason: `Treatment completed: ${recipe.treatment_name}`,
-          p_notes: `Auto-deducted on appointment completion`,
-          p_user_id: nurseUserId,
-          p_user_email: userEmail,
-        });
-
-        if (rpcErr) {
-          console.error(`[Inventory Deduct] Failed to deduct product ${item.product_id} for appointment ${appt.id}:`, rpcErr.message);
-        } else {
-          // Record the deduction in inventory_usage for audit and duplicate prevention
-          await supabase.from('inventory_usage').insert({
-            inventory_item_id: item.product_id,
-            appointment_id: appt.id,
-            quantity: deductQty,
-            recorded_by: nurseUserId,
-            notes: `Auto-deducted: ${recipe.treatment_name}`,
-          });
-        }
-      }
-
-      console.info(`[Inventory Deduct] Completed deduction for appointment ${appt.id}, recipe "${recipe.treatment_name}"`);
-    } catch (err) {
-      console.error('[Inventory Deduct] Unexpected error for appointment', appt.id, err);
+    setSuccessMsg(`Service changed to ${picked.name}.`);
+    setTimeout(() => setSuccessMsg(null), 4000);
+    if (detailAppt?.id === appt.id) {
+      setDetailAppt({ ...detailAppt, catalog_item_id: picked.id, service: picked.name });
     }
+    // A change after treatment start reverses the old recipe and applies the
+    // new one in the trigger; re-read so the result is not silent.
+    await refreshDeductionState(appt.id);
+    load();
   }
 
   async function cancelAppt(appt: AppointmentRow) {
@@ -856,6 +843,10 @@ export default function NurseDashboardTab({ userEmail, memberRole, memberBranchI
         onCloseModals={() => { setShowConsentModal(false); setShowNotesModal(false); setShowFeedbackQr(false); setShowConsentQr(false); }}
         onConsentSaved={() => loadConsentRecords(detailAppt.clients?.id ?? null, detailAppt.id)}
         onNoteSaved={() => loadTreatmentNotes(detailAppt.clients?.id ?? null, detailAppt.id)}
+        canEditService={canEditService}
+        catalogOptions={catalogOptions}
+        savingService={savingService}
+        onChangeService={(catalogItemId) => updateApptService(detailAppt, catalogItemId)}
         collections={collections}
         loadingCollections={loadingCollections}
         onRecordPayment={() => setShowPaymentModal(true)}
@@ -1312,6 +1303,7 @@ function AppointmentDetail({
   onOpenConsent, onOpenNotes, onOpenFeedbackQr, onOpenConsentQr,
   userEmail, showConsentModal, showNotesModal, showFeedbackQr, showConsentQr,
   onCloseModals, onConsentSaved, onNoteSaved,
+  canEditService, catalogOptions, savingService, onChangeService,
   collections, loadingCollections, onRecordPayment, onSubmitRemittance,
   onOpenFeedbackForm, feedbackStatus,
   nurseUserId, currentNurseName, memberLookup,
@@ -1337,6 +1329,10 @@ function AppointmentDetail({
   showFeedbackQr: boolean;
   showConsentQr: boolean;
   onCloseModals: () => void;
+  canEditService: boolean;
+  catalogOptions: { id: string; name: string; item_type: string }[];
+  savingService: boolean;
+  onChangeService: (catalogItemId: string) => void;
   onConsentSaved: () => void;
   onNoteSaved: () => void;
   collections: NurseCollection[];
@@ -1360,6 +1356,8 @@ function AppointmentDetail({
 
   // Consent confirmation: allow proceeding without captured consent after explicit confirmation
   const [showProceedConsentDialog, setShowProceedConsentDialog] = useState(false);
+  // Preview a captured consent without leaving the appointment for Client Management.
+  const [previewConsent, setPreviewConsent] = useState<ClientConsentRecord | null>(null);
   const consentBlocksTreatment = canStartTreatment && cfg.nextStatus === 'in_treatment' && !hasConsent;
   const intakeBlocksTreatment = canStartTreatment && cfg.nextStatus === 'in_treatment' && !intakeComplete;
 
@@ -1519,7 +1517,8 @@ function AppointmentDetail({
               {consentRecords.length > 0 && (
                 <div className="space-y-2">
                   {consentRecords.map(c => (
-                    <div key={c.id} className={`flex items-center gap-3 p-3 rounded-xl border ${c.status === 'signed' ? 'bg-emerald-50 border-emerald-200' : c.status === 'superseded' ? 'bg-slate-50 border-slate-200' : 'bg-amber-50 border-amber-200'}`}>
+                    <button key={c.id} type="button" onClick={() => setPreviewConsent(c)}
+                      className={`w-full text-left flex items-center gap-3 p-3 rounded-xl border transition-colors hover:brightness-95 ${c.status === 'signed' ? 'bg-emerald-50 border-emerald-200' : c.status === 'superseded' ? 'bg-slate-50 border-slate-200' : 'bg-amber-50 border-amber-200'}`}>
                       <div className="w-8 h-8 rounded-lg bg-white border border-slate-100 flex items-center justify-center flex-shrink-0">
                         {c.status === 'signed' ? <CheckCircle className="w-4 h-4 text-emerald-500" /> : c.status === 'superseded' ? <Archive className="w-4 h-4 text-slate-400" /> : <Clock className="w-4 h-4 text-amber-500" />}
                       </div>
@@ -1528,11 +1527,24 @@ function AppointmentDetail({
                         <p className="text-xs text-slate-400">{c.signatory_name ? `Signed by ${c.signatory_name}` : 'Pending'} · {c.signed_at ? fmtDateTime(c.signed_at) : '—'} · {c.submission_method ?? '—'}</p>
                       </div>
                       <span className={`text-xs font-bold ${c.status === 'signed' ? 'text-emerald-600' : c.status === 'superseded' ? 'text-slate-400' : 'text-amber-600'}`}>{c.status}</span>
-                    </div>
+                      <Eye className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+                    </button>
                   ))}
                 </div>
               )}
             </div>
+          </SectionBlock>
+
+          {/* Availed Service — editable on site when the client changes their mind */}
+          <SectionBlock title="Availed Service">
+            <ServiceEditor
+              appt={appt}
+              canEdit={canEditService}
+              options={catalogOptions}
+              saving={savingService}
+              onChange={onChangeService}
+            />
+            <InventoryDeductionStatus appt={appt} />
           </SectionBlock>
 
           {/* Treatment Notes */}
@@ -1639,6 +1651,7 @@ function AppointmentDetail({
       )}
       {showFeedbackQr && <QrModal title="Client Feedback QR" appt={appt} type="feedback" onClose={onCloseModals} />}
       {showConsentQr && <QrModal title="Consent & Waiver QR" appt={appt} type="consent" onClose={onCloseModals} />}
+      {previewConsent && <ConsentPreviewModal record={previewConsent} onClose={() => setPreviewConsent(null)} />}
       {showProceedConsentDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setShowProceedConsentDialog(false)}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
@@ -2025,6 +2038,182 @@ function QrModal({ title, appt, type, onClose }: { title: string; appt: Appointm
 }
 
 // ─── Shared UI Components ──────────────────────────────────────────────────────
+
+// ─── Consent Preview Modal ───────────────────────────────────────────────────
+// The consent list previously showed metadata only, so viewing an actual
+// signature meant leaving the appointment for Client Management.
+
+function ConsentPreviewModal({ record, onClose }: { record: ClientConsentRecord; onClose: () => void }) {
+  async function download() {
+    const url = await resolveSignatureUrl(record.signature_data);
+    if (!url) return;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `consent-${record.appointment_id ?? record.id}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-100 sticky top-0 bg-white rounded-t-2xl">
+          <div className="p-2 bg-teal-50 rounded-xl"><FileText className="w-5 h-5 text-teal-600" /></div>
+          <div className="min-w-0">
+            <h3 className="text-base font-bold text-slate-800">{record.form_type === 'waiver' ? 'Waiver' : 'Consent'} — {record.form_version}</h3>
+            <p className="text-xs text-slate-400">{record.status}</p>
+          </div>
+          <button onClick={onClose} className="ml-auto p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <DetailField icon={PenLine} label="Signatory" value={record.signatory_name} />
+            <DetailField icon={Clock} label="Signed" value={record.signed_at ? fmtDateTime(record.signed_at) : null} />
+            <DetailField icon={Droplets} label="Service" value={record.service} />
+            <DetailField icon={QrCode} label="Method" value={record.submission_method} />
+          </div>
+
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-2">Signature</p>
+            {record.signature_data ? (
+              <SignatureImage signatureData={record.signature_data}
+                className="w-full max-h-56 border border-slate-200 rounded-xl bg-white object-contain p-3" />
+            ) : (
+              <p className="text-xs text-slate-300 italic">No signature image stored</p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex gap-3 px-5 py-4 border-t border-slate-100">
+          <button onClick={onClose} className="flex-1 px-4 py-2.5 text-sm font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">Close</button>
+          {record.signature_data && (
+            <button onClick={download} className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-teal-600 hover:bg-teal-700 rounded-xl transition-colors">
+              <Download className="w-4 h-4" /> Download
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Availed Service Editor ──────────────────────────────────────────────────
+// Sits below Consent & Waiver in the appointment detail screen so a nurse or
+// assistant can correct the availed service on site. Locked once the
+// appointment is completed or cancelled — at that point the service is part of
+// the billing and inventory record and must not shift underneath it.
+
+const SERVICE_LOCKED_STATUSES: AppointmentStatus[] = ['completed', 'cancelled'];
+
+function ServiceEditor({ appt, canEdit, options, saving, onChange }: {
+  appt: AppointmentRow;
+  canEdit: boolean;
+  options: { id: string; name: string; item_type: string }[];
+  saving: boolean;
+  onChange: (catalogItemId: string) => void;
+}) {
+  const locked = SERVICE_LOCKED_STATUSES.includes(appt.status);
+  const current = appt.service ?? null;
+  // Legacy rows carry free text with no catalog link, so nothing can be
+  // deducted for them until the service is re-picked from the catalog.
+  const unlinked = !appt.catalog_item_id && !!current;
+
+  if (locked || !canEdit) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Droplets className="w-4 h-4 text-teal-600" />
+          <span className="text-sm font-semibold text-slate-800">{current ?? 'No service recorded'}</span>
+        </div>
+        <p className="text-xs text-slate-400 flex items-center gap-1.5">
+          <Lock className="w-3 h-3" />
+          {locked
+            ? `Service is locked once the appointment is ${appt.status}.`
+            : 'You do not have permission to change the availed service.'}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2.5">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+        <select
+          value={appt.catalog_item_id ?? ''}
+          disabled={saving}
+          onChange={e => { if (e.target.value) onChange(e.target.value); }}
+          className="flex-1 px-3.5 py-2.5 text-sm bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-400 transition-all disabled:opacity-50"
+        >
+          <option value="">{current ? `${current} (not linked to catalog)` : 'Select a service'}</option>
+          {options.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+        </select>
+        {saving && <span className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving...</span>}
+      </div>
+
+      {unlinked && (
+        <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 flex items-start gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" />
+          <span>This service is free text from an older booking and is not linked to the catalog, so inventory cannot be deducted for it. Re-select it above to link it.</span>
+        </p>
+      )}
+
+      <p className="text-[11px] text-slate-400">
+        Changing the service updates what the client is billed and what is deducted from inventory.
+      </p>
+    </div>
+  );
+}
+
+// ─── Inventory Deduction Status ──────────────────────────────────────────────
+// Deduction happens in a database trigger at treatment start. Its problems used
+// to be RAISE NOTICE only — invisible, so a treatment could consume nothing and
+// nobody would know until a stock count disagreed. This surfaces them where the
+// nurse can act on them.
+
+function InventoryDeductionStatus({ appt }: { appt: AppointmentRow }) {
+  const issues = appt.inventory_deduction_issues ?? [];
+  const deducted = !!appt.inventory_deducted_at;
+  const started = appt.status === 'in_treatment' || appt.status === 'completed';
+
+  // Nothing to report until treatment has actually begun.
+  if (!started) return null;
+
+  if (issues.length > 0) {
+    return (
+      <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3">
+        <p className="text-xs font-bold text-amber-800 flex items-center gap-1.5 mb-1.5">
+          <AlertTriangle className="w-3.5 h-3.5" /> Inventory was not fully deducted
+        </p>
+        <ul className="space-y-1">
+          {issues.map((issue, i) => (
+            <li key={i} className="text-xs text-amber-700 leading-relaxed">• {issue}</li>
+          ))}
+        </ul>
+        <p className="text-[11px] text-amber-600 mt-2">Record the stock manually under Inventory, or correct the service above and it will retry.</p>
+      </div>
+    );
+  }
+
+  if (deducted) {
+    return (
+      <p className="mt-3 text-xs text-emerald-700 flex items-center gap-1.5">
+        <CheckCircle className="w-3.5 h-3.5" />
+        Inventory deducted at treatment start.
+      </p>
+    );
+  }
+
+  return (
+    <p className="mt-3 text-xs text-slate-400 flex items-center gap-1.5">
+      <AlertTriangle className="w-3.5 h-3.5" />
+      No inventory has been deducted for this appointment.
+    </p>
+  );
+}
 
 function SectionBlock({ title, children }: { title: string; children: React.ReactNode }) {
   return <div><p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-3">{title}</p><div className="bg-slate-50 rounded-2xl p-5">{children}</div></div>;

@@ -6,6 +6,7 @@ import {
   Download, Eye, PenLine, Stethoscope, Award,
 } from 'lucide-react';
 import { supabase, type Client, type ClientProfile } from '../lib/supabase';
+import SignatureImage from './SignatureImage';
 import { loadUnifiedClientProfile, type UnifiedClientProfile } from '../lib/clientProfile';
 import { ClientProfileInformationSection } from './ClientProfileSections';
 
@@ -527,7 +528,7 @@ function ClientDetail({ client, onClose }: { client: FullClient; onClose: () => 
                     <div className="bg-slate-50 rounded-xl border border-slate-100 p-3">
                       <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 mb-2">Client Signature</p>
                       {c.signature_data ? (
-                        <img src={c.signature_data} alt="Client signature" className="max-h-16 w-auto object-contain" />
+                        <SignatureImage signatureData={c.signature_data} className="max-h-16 w-auto object-contain" />
                       ) : (
                         <p className="text-xs text-slate-300 italic">No signature image</p>
                       )}
@@ -644,7 +645,7 @@ function ClientDetail({ client, onClose }: { client: FullClient; onClose: () => 
                   <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 mb-2">Client Signature</p>
                   {viewConsent.signature_data ? (
                     <div className="bg-white border-2 border-slate-200 rounded-xl p-4">
-                      <img src={viewConsent.signature_data} alt="Client signature" className="max-h-32 w-auto mx-auto" />
+                      <SignatureImage signatureData={viewConsent.signature_data} className="max-h-32 w-auto mx-auto" />
                     </div>
                   ) : (
                     <p className="text-xs text-slate-300 italic">No signature image stored</p>

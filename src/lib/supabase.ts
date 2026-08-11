@@ -1021,6 +1021,16 @@ export interface Appointment {
   scheduled_time: string;
   location: string | null;
   service: string | null;
+  // FK to catalog_items. Null for legacy rows whose free-text `service` could not
+  // be resolved to a single catalog item. `service` remains the display value.
+  catalog_item_id: string | null;
+  // Set by trg_treatment_inventory when the appointment enters 'in_treatment'.
+  // Cleared on reversal. Null means no stock has moved for this appointment.
+  inventory_deducted_at: string | null;
+  inventory_deducted_recipe_id: string | null;
+  // Human-readable deduction problems (no linked recipe, insufficient stock).
+  // Surfaced in the appointment detail screen — these used to be silent.
+  inventory_deduction_issues: string[] | null;
   nurse_name: string | null;
   assistant_name: string | null;
   driver_name: string | null;
