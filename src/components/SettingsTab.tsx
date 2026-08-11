@@ -3,6 +3,7 @@ import {
   RefreshCw,
   Loader2,
   AlertCircle,
+  AlertTriangle,
   Bell,
   BellOff,
   Mail,
@@ -79,6 +80,28 @@ function Toggle({
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
+
+// Presentation for known feature flags. Without this, a key like
+// `inventory.auto_deduct` renders as "Inventory.auto Deduct" with the generic
+// "Feature toggle." description — too vague for a switch that moves real stock.
+const FEATURE_META: Record<string, { label: string; description: string; warning?: string }> = {
+  client_management: {
+    label: 'Enable Client Management',
+    description: 'Show the Client Management module for maintaining the master client list.',
+  },
+  'inventory.auto_deduct': {
+    label: 'Automatic Inventory Deduction',
+    description: 'Deduct a treatment’s recipe components from stock when the nurse starts the treatment, instead of at completion.',
+    warning: 'This moves real stock. While disabled, nothing is deducted automatically and inventory must be adjusted manually.',
+  },
+};
+
+function featureMeta(key: string): { label: string; description: string; warning?: string } {
+  return FEATURE_META[key] ?? {
+    label: key.replace(/[_.]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+    description: 'Feature toggle.',
+  };
+}
 
 export default function SettingsTab() {
   const [members, setMembers] = useState<MemberRow[]>([]);
@@ -692,6 +715,7 @@ export default function SettingsTab() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {features.map(f => {
                 const isClientMgmt = f.key === 'client_management';
+                const meta = featureMeta(f.key);
                 return (
                   <div key={f.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
                     <div className="flex items-start justify-between gap-4">
@@ -700,12 +724,14 @@ export default function SettingsTab() {
                           {isClientMgmt ? <Users className={`w-5 h-5 ${f.enabled ? 'text-teal-600' : 'text-slate-400'}`} /> : <ToggleLeft className={`w-5 h-5 ${f.enabled ? 'text-teal-600' : 'text-slate-400'}`} />}
                         </div>
                         <div>
-                          <p className="text-sm font-bold text-slate-800">
-                            {isClientMgmt ? 'Enable Client Management' : f.key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                          </p>
-                          <p className="text-xs text-slate-400 mt-0.5">
-                            {isClientMgmt ? 'Show the Client Management module for maintaining the master client list.' : 'Feature toggle.'}
-                          </p>
+                          <p className="text-sm font-bold text-slate-800">{meta.label}</p>
+                          <p className="text-xs text-slate-400 mt-0.5">{meta.description}</p>
+                          {meta.warning && (
+                            <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5 mt-2 flex items-start gap-1.5">
+                              <AlertTriangle className="w-3 h-3 mt-px flex-shrink-0" />
+                              <span>{meta.warning}</span>
+                            </p>
+                          )}
                           <p className="text-[11px] text-slate-300 mt-1.5">Last updated {f.updated_at ? new Date(f.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}</p>
                         </div>
                       </div>
