@@ -143,22 +143,14 @@ export default function ConsentForm() {
         ip_address: null,
         user_agent: navigator.userAgent,
       };
-      console.log('CONSENT PAYLOAD (raw):', JSON.parse(JSON.stringify(payload)));
-      console.log('CONSENT UUID FIELDS:', {
-        client_id: { value: payload.client_id, type: typeof payload.client_id },
-        appointment_id: { value: payload.appointment_id, type: typeof payload.appointment_id },
-        witness_user_id: { value: payload.witness_user_id, type: typeof payload.witness_user_id },
-      });
-
       const { error: insertErr } = await supabase.from('client_consent_records').insert(payload);
 
       if (insertErr) {
-        console.error('Consent save error — code:', (insertErr as any).code);
-        console.error('Consent save error — message:', (insertErr as any).message);
-        console.error('Consent save error — details:', (insertErr as any).details);
-        console.error('Consent save error — hint:', (insertErr as any).hint);
-        console.error('Consent save error — full:', insertErr);
-        setError(`[DEBUG] code=${(insertErr as any).code} | message=${(insertErr as any).message} | UUIDs: client_id=${JSON.stringify(payload.client_id)} appointment_id=${JSON.stringify(payload.appointment_id)} witness_user_id=${JSON.stringify(payload.witness_user_id)} | full_payload=${JSON.stringify(payload)}`);
+        // This page is opened by the client on their own phone. Diagnostics stay
+        // in the console and never include the payload, which carries their
+        // signature image.
+        console.error('Consent save failed:', insertErr.code, insertErr.message, insertErr.details, insertErr.hint);
+        setError('We could not save your consent form. Please try again, or ask your nurse for assistance.');
         return;
       }
 

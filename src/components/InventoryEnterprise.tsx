@@ -1030,6 +1030,9 @@ function AuditDetailModal({ audit, canManage, userEmail, onClose, onChanged }: {
   const [items, setItems] = useState<InventoryAuditItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Reconciliation writes used to discard their errors, so a count that failed
+  // to save looked exactly like one that saved.
+  const [auditErr, setAuditErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1043,7 +1046,21 @@ function AuditDetailModal({ audit, canManage, userEmail, onClose, onChanged }: {
   async function updateCounted(item: InventoryAuditItem, counted: number) {
     const variance = counted - item.system_quantity;
     const variance_pct = item.system_quantity > 0 ? (variance / item.system_quantity) * 100 : 0;
-    await supabase.from('inventory_audit_items').update({ counted_quantity: counted, variance, variance_pct }).eq('id', item.id);
+    setAuditErr(null);
+
+    const { error: countErr } = await supabase
+      .from('inventory_audit_items')
+      .update({ counted_quantity: counted, variance, variance_pct })
+      .eq('id', item.id);
+
+    if (countErr) {
+      // Do not update local state: showing the count as saved when it was not
+      // is what makes a physical count quietly disagree with the record.
+      console.error('Audit count save failed:', countErr);
+      setAuditErr(`Could not save the count for ${item.inventory_products?.name ?? 'this product'}: ${countErr.message}`);
+      return;
+    }
+
     setItems(items.map(i => i.id === item.id ? { ...i, counted_quantity: counted, variance, variance_pct } : i));
   }
 
@@ -1061,8 +1078,9 @@ function AuditDetailModal({ audit, canManage, userEmail, onClose, onChanged }: {
     if (!confirm(msg)) return;
 
     setSaving(true);
+    setAuditErr(null);
     const variants = items.filter(i => i.variance !== 0).length;
-    await supabase.from('inventory_audits').update({
+    const { error: completeErr } = await supabase.from('inventory_audits').update({
       status: 'completed',
       total_items: items.length,
       total_variants: variants,
@@ -1070,20 +1088,41 @@ function AuditDetailModal({ audit, canManage, userEmail, onClose, onChanged }: {
       updated_at: new Date().toISOString(),
     }).eq('id', audit.id);
     setSaving(false);
+
+    if (completeErr) {
+      console.error('Audit completion failed:', completeErr);
+      setAuditErr(`Could not complete this audit: ${completeErr.message}`);
+      return;
+    }
     onChanged();
   }
 
   async function approveAudit() {
     setSaving(true);
-    await supabase.from('inventory_audits').update({
+    setAuditErr(null);
+
+    const { error: approveErr } = await supabase.from('inventory_audits').update({
       status: 'approved',
       approved_by: userEmail,
       approved_at: new Date().toISOString(),
     }).eq('id', audit.id);
 
-    // Apply adjustments for items with variance
+    if (approveErr) {
+      console.error('Audit approval failed:', approveErr);
+      setAuditErr(`Could not approve this audit: ${approveErr.message}`);
+      setSaving(false);
+      return;
+    }
+
+    // Apply adjustments for items with variance. Each item is marked adjusted
+    // ONLY if its stock movement actually succeeded — previously a failed
+    // adjustment was still flagged as applied, so the variance silently
+    // disappeared from the audit without the stock ever moving.
+    const failures: string[] = [];
     for (const item of items.filter(i => i.variance !== 0 && !i.adjusted)) {
-      await supabase.rpc('adjust_inventory', {
+      const name = item.inventory_products?.name ?? item.product_id;
+
+      const { error: adjErr } = await supabase.rpc('adjust_inventory', {
         p_product_id: item.product_id,
         p_quantity: item.variance,
         p_reason: `Audit adjustment: ${audit.audit_number}`,
@@ -1091,9 +1130,26 @@ function AuditDetailModal({ audit, canManage, userEmail, onClose, onChanged }: {
         p_user_id: null,
         p_user_email: userEmail,
       });
-      await supabase.from('inventory_audit_items').update({ adjusted: true }).eq('id', item.id);
+
+      if (adjErr) {
+        console.error('Audit adjustment failed for', item.product_id, adjErr);
+        failures.push(`${name}: ${adjErr.message}`);
+        continue;
+      }
+
+      const { error: markErr } = await supabase.from('inventory_audit_items').update({ adjusted: true }).eq('id', item.id);
+      if (markErr) {
+        console.error('Could not mark item adjusted:', markErr);
+        failures.push(`${name}: stock was adjusted but the item could not be marked as applied (${markErr.message})`);
+      }
     }
+
     setSaving(false);
+
+    if (failures.length > 0) {
+      setAuditErr(`${failures.length} adjustment(s) did not apply:\n${failures.join('\n')}`);
+      return;
+    }
     onChanged();
   }
 
@@ -1105,6 +1161,12 @@ function AuditDetailModal({ audit, canManage, userEmail, onClose, onChanged }: {
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
         </div>
         <div className="flex-1 overflow-y-auto px-6 py-4">
+          {auditErr && (
+            <div className="mb-4 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+              <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-red-700 whitespace-pre-line leading-relaxed">{auditErr}</p>
+            </div>
+          )}
           {loading ? <div className="flex items-center justify-center h-32"><Loader2 className="w-6 h-6 animate-spin text-teal-600" /></div> : (
             <div className="overflow-x-auto">
               <div className="min-w-[760px]">

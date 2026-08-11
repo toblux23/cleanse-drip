@@ -416,7 +416,9 @@ export default function NurseDashboardTab({ userEmail, memberRole, memberBranchI
   // `||` not `??`: permissions is always a real Set, so `.has()` returns false
   // rather than undefined and a `??` fallback would never fire.
   const canEditService = (permissions?.has('appointments.edit_service') ?? false) || isSuperAdmin;
-  const canManageBuffer = permissions?.has('settings.manage') ?? isSuperAdmin;
+  // `||` not `??`, for the same reason as canEditService above: permissions is
+  // always a real Set, so `.has()` returns false and a `??` fallback is dead.
+  const canManageBuffer = (permissions?.has('settings.manage') ?? false) || isSuperAdmin;
   const effectiveBranch = isSuperAdmin ? selectedBranch : (memberBranchId ?? 'all');
 
   // ─── Data loading ───────────────────────────────────────────────────────────
@@ -1782,7 +1784,9 @@ function ConsentSignatureModal({ appt, booking, userEmail, onClose, onSaved }: {
 
       if (insertErr) {
         console.error('Consent save error:', insertErr);
-        setError(`[DEBUG] code=${(insertErr as any).code} | message=${(insertErr as any).message} | UUIDs: client_id=${JSON.stringify(consentPayload.client_id)} appointment_id=${JSON.stringify(consentPayload.appointment_id)}`);
+        // The client is often watching this screen, so the message stays plain.
+        // Diagnostics go to the console above, not into the UI.
+        setError(`Could not save the consent form: ${insertErr.message}`);
         return;
       }
       onSaved();
