@@ -712,38 +712,48 @@ function ItemEditor({ item, categories, allItems, canManagePricing, canManageRec
       savedId = data.id;
     }
 
-    // Save recipe items if recipe section is visible and user can manage recipes
+    // Save recipe items if recipe section is visible and user can manage recipes.
+    // The catalog item is already persisted at this point, so any failure below is
+    // reported without closing the editor — the recipe is the only unsaved part.
     if (showRecipeSection && canManageRecipes && savedId) {
       // Upsert recipe
-      const { data: existingRecipe } = await supabase.from('treatment_recipes').select('id').eq('catalog_item_id', savedId).maybeSingle();
+      const { data: existingRecipe, error: findErr } = await supabase.from('treatment_recipes').select('id').eq('catalog_item_id', savedId).maybeSingle();
+      if (findErr) { setError(`Product saved, but the inventory recipe could not be loaded: ${findErr.message}`); setSaving(false); return; }
+
       let recipeId = existingRecipe?.id;
       if (!recipeId) {
-        const { data: newRecipe } = await supabase.from('treatment_recipes').insert({
+        const { data: newRecipe, error: recipeErr } = await supabase.from('treatment_recipes').insert({
           treatment_name: form.name.trim(),
           description: form.short_description || null,
           is_active: true,
           catalog_item_id: savedId,
         }).select('id').single();
+        if (recipeErr) { setError(`Product saved, but the inventory recipe could not be created: ${recipeErr.message}`); setSaving(false); return; }
         recipeId = newRecipe?.id;
       } else {
-        await supabase.from('treatment_recipes').update({ treatment_name: form.name.trim(), updated_at: new Date().toISOString() }).eq('id', recipeId);
+        const { error: updateErr } = await supabase.from('treatment_recipes').update({ treatment_name: form.name.trim(), updated_at: new Date().toISOString() }).eq('id', recipeId);
+        if (updateErr) { setError(`Product saved, but the inventory recipe could not be updated: ${updateErr.message}`); setSaving(false); return; }
       }
-      if (recipeId) {
-        // Delete old items and re-insert
-        await supabase.from('treatment_recipe_items').delete().eq('recipe_id', recipeId);
-        const validItems = recipeItems.filter(ri => ri.product_id);
-        if (validItems.length > 0) {
-          await supabase.from('treatment_recipe_items').insert(validItems.map(ri => ({
-            recipe_id: recipeId,
-            product_id: ri.product_id,
-            quantity: Number(ri.quantity) || 1,
-            unit_of_measure: ri.unit_of_measure || null,
-            is_required: ri.is_required,
-            allow_substitution: ri.allow_substitution,
-            waste_allowance: ri.waste_allowance != null ? Number(ri.waste_allowance) : null,
-            notes: ri.notes || null,
-          })));
-        }
+
+      if (!recipeId) { setError('Product saved, but the inventory recipe could not be created. Components were not saved.'); setSaving(false); return; }
+
+      // Delete old items and re-insert
+      const { error: clearErr } = await supabase.from('treatment_recipe_items').delete().eq('recipe_id', recipeId);
+      if (clearErr) { setError(`Product saved, but existing components could not be replaced: ${clearErr.message}`); setSaving(false); return; }
+
+      const validItems = recipeItems.filter(ri => ri.product_id);
+      if (validItems.length > 0) {
+        const { error: itemsErr } = await supabase.from('treatment_recipe_items').insert(validItems.map(ri => ({
+          recipe_id: recipeId,
+          product_id: ri.product_id,
+          quantity: Number(ri.quantity) || 1,
+          unit_of_measure: ri.unit_of_measure || null,
+          is_required: ri.is_required,
+          allow_substitution: ri.allow_substitution,
+          waste_allowance: ri.waste_allowance != null ? Number(ri.waste_allowance) : null,
+          notes: ri.notes || null,
+        })));
+        if (itemsErr) { setError(`Product saved, but the components could not be saved: ${itemsErr.message}`); setSaving(false); return; }
       }
     }
 
@@ -906,7 +916,7 @@ function ItemEditor({ item, categories, allItems, canManagePricing, canManageRec
         {/* E. Inventory Recipe */}
         {showRecipeSection && (
           <FormSection title="Inventory Recipe">
-            {!canManageRecipes && item && (
+            {!canManageRecipes && (
               <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">You do not have permission to edit inventory recipes.</p>
             )}
             {loadingRecipe ? (
@@ -918,7 +928,7 @@ function ItemEditor({ item, categories, allItems, canManagePricing, canManageRec
                   return (
                   <div key={idx} className="flex flex-col sm:flex-row gap-2 bg-slate-50 rounded-xl p-3 border border-slate-100">
                     <select value={ri.product_id} onChange={e => updateRecipeItem(idx, 'product_id', e.target.value)}
-                      className={`${inputCls} flex-1 sm:w-auto`} disabled={!canManageRecipes && !!item}>
+                      className={`${inputCls} flex-1 sm:w-auto`} disabled={!canManageRecipes}>
                       <option value="">Select a Product</option>
                       {inventoryProducts.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                       {!productInList && ri.product_id && ri.inventory_products && (
@@ -926,22 +936,22 @@ function ItemEditor({ item, categories, allItems, canManagePricing, canManageRec
                       )}
                     </select>
                     <input type="number" step="0.01" value={ri.quantity} onChange={e => updateRecipeItem(idx, 'quantity', e.target.value)}
-                      className={`${inputCls} sm:w-24`} placeholder="Qty" disabled={!canManageRecipes && !!item} />
+                      className={`${inputCls} sm:w-24`} placeholder="Qty" disabled={!canManageRecipes} />
                     <input type="text" value={ri.unit_of_measure ?? ''} onChange={e => updateRecipeItem(idx, 'unit_of_measure', e.target.value)}
-                      className={`${inputCls} sm:w-24`} placeholder="Unit" disabled={!canManageRecipes && !!item} />
+                      className={`${inputCls} sm:w-24`} placeholder="Unit" disabled={!canManageRecipes} />
                     <select value={ri.is_required ? 'required' : 'optional'} onChange={e => updateRecipeItem(idx, 'is_required', e.target.value === 'required')}
-                      className={`${inputCls} sm:w-28`} disabled={!canManageRecipes && !!item}>
+                      className={`${inputCls} sm:w-28`} disabled={!canManageRecipes}>
                       <option value="required">Required</option>
                       <option value="optional">Optional</option>
                     </select>
-                    <button type="button" onClick={() => removeRecipeItem(idx)} disabled={!canManageRecipes && !!item}
+                    <button type="button" onClick={() => removeRecipeItem(idx)} disabled={!canManageRecipes}
                       className="p-2.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-40">
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
                   );
                 })}
-                {(canManageRecipes || !item) && (
+                {canManageRecipes && (
                   <button type="button" onClick={addRecipeItem}
                     className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-teal-600 border border-teal-200 bg-teal-50 rounded-lg hover:bg-teal-100 transition-colors">
                     <Plus className="w-3.5 h-3.5" /> Add Component
