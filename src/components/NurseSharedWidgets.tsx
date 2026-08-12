@@ -252,8 +252,8 @@ export function AttendanceWidget({
     const fileName = `attendance/${userEmail.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.${ext}`;
     const { error: uploadErr } = await supabase.storage.from('attendance-photos').upload(fileName, file, { cacheControl: '3600', upsert: false });
     if (uploadErr) return null;
-    const { data: { publicUrl } } = supabase.storage.from('attendance-photos').getPublicUrl(fileName);
-    return publicUrl;
+    // Path, not public URL — the bucket is private; reads sign on demand.
+    return fileName;
   }
 
   async function handleClockIn(photoFile: File) {

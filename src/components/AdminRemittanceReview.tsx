@@ -9,6 +9,7 @@ import {
   type CollectionStatus, COLLECTION_STATUS_CFG, type Branch,
   resolveMemberName, buildMemberLookup, type TeamMember, type MemberLookup,
 } from '../lib/supabase';
+import { openStorageObject } from '../lib/storageUrls';
 
 interface AdminRemittanceReviewProps {
   userEmail: string;
@@ -417,9 +418,13 @@ function RemittanceDetail({
               </div>
               {collection.remittance_notes && <p className="text-sm text-slate-600 mt-3 pt-3 border-t border-slate-100"><strong>Nurse Notes:</strong> {collection.remittance_notes}</p>}
               {collection.remittance_proof_url && (
-                <a href={collection.remittance_proof_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 mt-3 text-xs font-bold text-teal-600 hover:text-teal-700">
+                <button
+                  type="button"
+                  onClick={() => openStorageObject('payment-receipts', collection.remittance_proof_url)}
+                  className="inline-flex items-center gap-1.5 mt-3 text-xs font-bold text-teal-600 hover:text-teal-700"
+                >
                   <Eye className="w-3.5 h-3.5" /> View Proof of Remittance
-                </a>
+                </button>
               )}
             </DetailSection>
           )}
@@ -532,9 +537,13 @@ function RemittanceDetail({
 
           {/* Proof attachment */}
           {collection.proof_url && (
-            <a href={collection.proof_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-teal-700 bg-teal-50 border border-teal-200 rounded-xl hover:bg-teal-100 transition-colors">
+            <button
+              type="button"
+              onClick={() => openStorageObject('payment-receipts', collection.proof_url)}
+              className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-teal-700 bg-teal-50 border border-teal-200 rounded-xl hover:bg-teal-100 transition-colors"
+            >
               <Eye className="w-4 h-4" /> View Proof of Payment
-            </a>
+            </button>
           )}
         </div>
       </div>

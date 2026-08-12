@@ -53,8 +53,9 @@ export function RecordPaymentModal({
       .from('payment-receipts')
       .upload(fileName, file, { cacheControl: '3600', upsert: false });
     if (uploadErr) return null;
-    const { data: { publicUrl } } = supabase.storage.from('payment-receipts').getPublicUrl(fileName);
-    return publicUrl;
+    // Store the object path, not a public URL: the bucket is private and reads
+    // mint a short-lived signed URL instead (see lib/storageUrls.ts).
+    return fileName;
   }
 
   async function handleSave() {
@@ -298,8 +299,8 @@ export function SubmitRemittanceModal({
       .from('payment-receipts')
       .upload(fileName, file, { cacheControl: '3600', upsert: false });
     if (uploadErr) return null;
-    const { data: { publicUrl } } = supabase.storage.from('payment-receipts').getPublicUrl(fileName);
-    return publicUrl;
+    // Path, not public URL — see lib/storageUrls.ts.
+    return fileName;
   }
 
   async function handleSubmit() {

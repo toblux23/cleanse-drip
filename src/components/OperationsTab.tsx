@@ -51,6 +51,7 @@ import {
   memberDisplayName,
   ROLES,
 } from '../lib/supabase';
+import { resolveStorageUrl } from '../lib/storageUrls';
 import { loadUnifiedClientProfileFromAppointment, type UnifiedClientProfile } from '../lib/clientProfile';
 import { ClientProfileInformationSection } from './ClientProfileSections';
 
@@ -1342,8 +1343,14 @@ function RecordPaymentModal({ appt, onClose, onSaved }: {
   const [method, setMethod] = useState(appt.payment_method ?? 'cash');
   const [reference, setReference] = useState(appt.payment_reference ?? '');
   const [imageFile, setImageFile] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string | null>(appt.payment_receipt_url ?? null);
+  // payment_receipt_url holds an object path in a private bucket, so the stored
+  // receipt has to be signed before it can be previewed — hence null here and
+  // the effect below, rather than seeding state from the column directly.
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageRemoved, setImageRemoved] = useState(false);
+  // Set once the user picks or clears an image, so a signed URL that resolves
+  // late cannot overwrite their choice.
+  const imageTouchedRef = useRef(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1351,9 +1358,20 @@ function RecordPaymentModal({ appt, onClose, onSaved }: {
   const inputCls = 'w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-slate-800 placeholder-slate-300 bg-white';
   const labelCls = 'block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5';
 
+  useEffect(() => {
+    if (!appt.payment_receipt_url) return;
+    let cancelled = false;
+    resolveStorageUrl('payment-receipts', appt.payment_receipt_url).then(url => {
+      if (cancelled || !url || imageTouchedRef.current) return;
+      setImagePreview(prev => (prev === null ? url : prev));
+    });
+    return () => { cancelled = true; };
+  }, [appt.payment_receipt_url]);
+
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    imageTouchedRef.current = true;
     if (imagePreview?.startsWith('blob:')) URL.revokeObjectURL(imagePreview);
     setImageFile(file);
     setImagePreview(URL.createObjectURL(file));
@@ -1361,6 +1379,7 @@ function RecordPaymentModal({ appt, onClose, onSaved }: {
   }
 
   function removeImage() {
+    imageTouchedRef.current = true;
     if (imagePreview?.startsWith('blob:')) URL.revokeObjectURL(imagePreview);
     setImageFile(null);
     setImagePreview(null);
@@ -1386,8 +1405,8 @@ function RecordPaymentModal({ appt, onClose, onSaved }: {
           .from('payment-receipts')
           .upload(path, imageFile, { upsert: true });
         if (uploadErr) throw new Error('Failed to upload receipt image. Please try again.');
-        const { data: { publicUrl } } = supabase.storage.from('payment-receipts').getPublicUrl(path);
-        receiptUrl = publicUrl;
+        // Store the object path; the bucket is private and reads sign on demand.
+        receiptUrl = path;
       }
 
       const finAmount = status !== 'waived' ? Number(amount) : 0;
@@ -1679,6 +1698,8 @@ export function AppointmentDetailPage({
 }) {
   const [appt, setAppt] = useState(initialAppt);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  // Signed URL for the stored receipt; null while resolving or if signing fails.
+  const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
   const [unifiedProfile, setUnifiedProfile] = useState<UnifiedClientProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [feedback, setFeedback] = useState<{
@@ -1726,6 +1747,20 @@ export function AppointmentDetailPage({
 
   const feedbackUrl = `${window.location.origin}/?src=email&name=${encodeURIComponent(appt.clients?.full_name ?? '')}&appointment_id=${appt.id}#feedback`;
   const feedbackQrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(feedbackUrl)}&margin=12&bgcolor=f0fdfa&color=0f766e&format=svg`;
+
+  // Re-signs whenever the receipt changes, so recording a new payment swaps the
+  // preview rather than leaving the previous receipt on screen.
+  useEffect(() => {
+    let cancelled = false;
+    if (!appt.payment_receipt_url) {
+      setReceiptUrl(null);
+      return;
+    }
+    resolveStorageUrl('payment-receipts', appt.payment_receipt_url).then(url => {
+      if (!cancelled) setReceiptUrl(url);
+    });
+    return () => { cancelled = true; };
+  }, [appt.payment_receipt_url]);
 
   async function handlePaymentSaved() {
     setShowPaymentModal(false);
@@ -1863,16 +1898,16 @@ export function AppointmentDetailPage({
                 {appt.payment_amount != null ? ` · ₱${Number(appt.payment_amount).toLocaleString()}` : ''}
               </p>
             )}
-            {appt.payment_receipt_url && (
+            {appt.payment_receipt_url && receiptUrl && (
               <a
-                href={appt.payment_receipt_url}
+                href={receiptUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="block mt-3 rounded-2xl overflow-hidden border border-slate-200 hover:border-teal-300 transition-colors"
                 title="View full receipt"
               >
                 <img
-                  src={appt.payment_receipt_url}
+                  src={receiptUrl}
                   alt="Payment receipt"
                   className="w-full max-h-48 object-cover"
                 />
