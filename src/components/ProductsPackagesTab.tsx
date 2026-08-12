@@ -3,7 +3,7 @@ import {
   Search, Filter, Plus, Pencil, Copy, Eye, Loader2, X, ChevronDown,
   Package, Droplet, FlaskConical, PlusCircle, Layers, Boxes, Tag,
   CheckCircle, AlertCircle, DollarSign, Clock, ToggleLeft, ToggleRight,
-  ArrowLeft, Save, Trash2, Link2, Link2Off,
+  ArrowLeft, Save, Trash2, Link2, Link2Off, AlertTriangle,
 } from 'lucide-react';
 import { supabase, type CatalogItem, type CatalogItemType, type CatalogCategory, type TreatmentRecipeItem } from '../lib/supabase';
 
@@ -26,6 +26,28 @@ const SUB_TABS: { key: string; label: string; icon: React.ElementType; filter?: 
   { key: 'mapping', label: 'Inventory Mapping', icon: Link2 },
   { key: 'categories', label: 'Categories', icon: Tag },
 ];
+
+// Item types that consume inventory. A session package or physical product has
+// nothing to deduct, so an absent recipe is only a problem for these.
+const RECIPE_REQUIRED_TYPES: CatalogItemType[] = ['iv_drip', 'peptide', 'add_on'];
+
+type RecipeGap = { label: string; detail: string } | null;
+
+// Returns the warning to show for an item, or null when nothing is wrong.
+// `coverage` maps catalog_item_id -> component count; a missing key means the
+// item has no linked recipe at all.
+function recipeGapFor(item: CatalogItem, coverage: Map<string, number>): RecipeGap {
+  if (!item.is_active) return null;
+  if (!RECIPE_REQUIRED_TYPES.includes(item.item_type)) return null;
+
+  if (!coverage.has(item.id)) {
+    return { label: 'No recipe', detail: 'No inventory recipe is linked, so nothing will be deducted when this treatment is given.' };
+  }
+  if (coverage.get(item.id) === 0) {
+    return { label: 'Empty recipe', detail: 'The linked recipe has no components, so nothing will be deducted when this treatment is given.' };
+  }
+  return null;
+}
 
 function formatPeso(n: number | null | undefined): string {
   return `₱${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
@@ -67,16 +89,32 @@ export default function ProductsPackagesTab({
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // catalog_item_id -> component count. Missing key means no linked recipe.
+  const [recipeCoverage, setRecipeCoverage] = useState<Map<string, number>>(new Map());
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const [itemsRes, catRes] = await Promise.all([
+    const [itemsRes, catRes, recipeRes, recipeItemRes] = await Promise.all([
       supabase.from('catalog_items')
         .select('*, catalog_categories(id,name), included_catalog_item:catalog_items!included_catalog_item_id(id,name)')
         .order('display_order', { ascending: true }),
       supabase.from('catalog_categories').select('*').order('display_order', { ascending: true }),
+      // Recipe coverage, so items that would silently deduct nothing are visible.
+      supabase.from('treatment_recipes').select('id, catalog_item_id').eq('is_active', true),
+      supabase.from('treatment_recipe_items').select('recipe_id'),
     ]);
+
+    // catalog_item_id -> number of components (absent = no recipe at all)
+    const componentCount = new Map<string, number>();
+    if (recipeRes.data && recipeItemRes.data) {
+      const perRecipe = new Map<string, number>();
+      recipeItemRes.data.forEach(ri => perRecipe.set(ri.recipe_id, (perRecipe.get(ri.recipe_id) ?? 0) + 1));
+      recipeRes.data.forEach(r => {
+        if (r.catalog_item_id) componentCount.set(r.catalog_item_id, perRecipe.get(r.id) ?? 0);
+      });
+    }
+    setRecipeCoverage(componentCount);
     if (itemsRes.error) setError(itemsRes.error.message);
     else setItems((itemsRes.data ?? []) as unknown as CatalogItem[]);
     if (catRes.error) setError(catRes.error.message);
@@ -280,6 +318,27 @@ export default function ProductsPackagesTab({
         </select>
       </div>
 
+      {/* Recipe coverage summary. Without this, an item that deducts nothing is
+          indistinguishable from one that works until stock stops adding up. */}
+      {!loading && (() => {
+        const gaps = items.filter(i => recipeGapFor(i, recipeCoverage));
+        if (gaps.length === 0) return null;
+        return (
+          <div className="mb-4 flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+            <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-amber-800">
+                {gaps.length} active {gaps.length === 1 ? 'treatment has' : 'treatments have'} no inventory recipe
+              </p>
+              <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
+                Nothing is deducted from stock when {gaps.length === 1 ? 'it is' : 'these are'} given: {gaps.slice(0, 6).map(g => g.name).join(', ')}
+                {gaps.length > 6 ? `, and ${gaps.length - 6} more` : ''}.
+              </p>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Content */}
       {loading ? (
         <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 animate-spin text-teal-500" /></div>
@@ -293,6 +352,7 @@ export default function ProductsPackagesTab({
           {filtered.map(item => {
             const cfg = ITEM_TYPE_CFG[item.item_type];
             const Icon = cfg.icon;
+            const gap = recipeGapFor(item, recipeCoverage);
             const mappingStatus = !item.inventory_tracking_enabled ? 'unmapped' : item.inventory_product_id ? 'mapped' : 'partial';
             const mappingCfg = mappingStatus === 'mapped' ? { label: 'Mapped', color: 'text-emerald-600', bg: 'bg-emerald-50 border-emerald-200' }
               : mappingStatus === 'partial' ? { label: 'Partially Mapped', color: 'text-amber-600', bg: 'bg-amber-50 border-amber-200' }
@@ -310,6 +370,12 @@ export default function ProductsPackagesTab({
                         <p className="font-bold text-slate-900 text-sm">{item.name}</p>
                         {!item.is_active && <span className="px-2 py-0.5 bg-slate-100 text-slate-500 text-[10px] font-bold rounded-full">INACTIVE</span>}
                         {item.featured && <span className="px-2 py-0.5 bg-teal-50 text-teal-600 text-[10px] font-bold rounded-full border border-teal-100">FEATURED</span>}
+                        {gap && (
+                          <span title={gap.detail}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-bold rounded-full">
+                            <AlertTriangle className="w-2.5 h-2.5" /> {gap.label.toUpperCase()}
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-slate-400 mt-0.5">{item.internal_code ?? 'No code'} · {cfg.label}{item.catalog_categories ? ` · ${item.catalog_categories.name}` : ''}</p>
                       {item.short_description && <p className="text-xs text-slate-500 mt-1 line-clamp-1">{item.short_description}</p>}
