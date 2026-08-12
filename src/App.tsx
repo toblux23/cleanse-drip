@@ -53,23 +53,11 @@ export default function App() {
     setMemberRecord(data);
 
     if (data?.role && data.status === 'approved') {
-      const { data: permData, error: permErr } = await supabase
-        .from('role_permissions')
-        .select('permissions!inner(key)')
-        .eq('role_id', (
-          await supabase.from('roles').select('id').eq('key', data.role).maybeSingle()
-        ).data?.id ?? -1);
-
-      if (permErr || !permData) {
-        setPermissions(new Set());
-        return;
-      }
-
-      const keys = new Set<string>();
-      for (const row of permData as { permissions: { key: string } | null }[]) {
-        if (row.permissions?.key) keys.add(row.permissions.key);
-      }
-      setPermissions(keys);
+      // No parameters here on purpose — get_my_permissions() derives the caller
+      // entirely from auth.uid() server-side, so there's no client-supplied id
+      // (role_id, user_id, etc.) left in this request for anyone to substitute.
+      const { data: permKeys, error: permErr } = await supabase.rpc('get_my_permissions');
+      setPermissions(permErr || !permKeys ? new Set() : new Set(permKeys as string[]));
     } else {
       setPermissions(new Set());
     }
