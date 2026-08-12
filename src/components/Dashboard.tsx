@@ -865,15 +865,11 @@ function BookingsTab({ userEmail, canViewSensitive, canManage = true }: { userEm
               intake_form_link: intakeFormLink,
             },
           };
-          // Fire-and-forget: email failure must not roll back the booking confirmation
-          fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-notification-email`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(emailBody),
-          }).catch((e) => console.error('[Booking Confirmation Email] Failed to send:', e));
+          // Fire-and-forget: email failure must not roll back the booking confirmation.
+          // invoke() sends the signed-in user's token; the function requires an
+          // approved team member before it will honour a `to` address.
+          supabase.functions.invoke('send-notification-email', { body: emailBody })
+            .catch((e) => console.error('[Booking Confirmation Email] Failed to send:', e));
         } else {
           console.warn('[Booking Confirmation Email] Skipped: no email address on booking or client record for', booking.id);
         }

@@ -778,6 +778,7 @@ function ProductModal({ branches, branchFilter, product, onClose, onSaved }: {
     reorder_point: product?.reorder_point ?? 0,
     reorder_quantity: product?.reorder_quantity ?? 0,
     standard_cost: product?.standard_cost ?? 0,
+    average_cost: product?.average_cost ?? 0,
     selling_price: product?.selling_price ?? 0,
     suggested_selling_price: product?.suggested_selling_price ?? 0,
     cold_storage: product?.cold_storage ?? false,
@@ -829,12 +830,37 @@ function ProductModal({ branches, branchFilter, product, onClose, onSaved }: {
       reorder_point: Number(form.reorder_point) || 0,
       reorder_quantity: Number(form.reorder_quantity) || 0,
       standard_cost: Number(form.standard_cost) || 0,
+      average_cost: Number(form.average_cost) || 0,
       selling_price: Number(form.selling_price) || 0,
       suggested_selling_price: Number(form.suggested_selling_price) || 0,
     };
+
+    // Average cost drives inventory valuation, so a manual change is recorded
+    // rather than silently altering the value of stock on hand.
+    const prevAvg = Number(product?.average_cost ?? 0);
+    const nextAvg = Number(form.average_cost) || 0;
+    const avgChanged = !!product && prevAvg !== nextAvg;
+
     const { error } = product
       ? await supabase.from('inventory_products').update(payload).eq('id', product.id)
       : await supabase.from('inventory_products').insert({ ...payload, beginning_stock: 0, current_stock: 0 });
+
+    if (!error && avgChanged && product) {
+      const stock = Number(product.current_stock ?? 0);
+      const { error: logErr } = await supabase.from('inventory_transactions').insert({
+        product_id: product.id,
+        transaction_type: 'adjustment',
+        quantity: 0,                       // cost-only change; no stock movement
+        unit_cost: nextAvg,
+        before_quantity: stock,
+        after_quantity: stock,
+        reference_type: 'manual',
+        reason: 'Average cost set manually',
+        notes: `Average cost ${prevAvg} -> ${nextAvg}`,
+        branch_id: product.branch_id ?? null,
+      });
+      if (logErr) console.error('Could not log the average cost change:', logErr);
+    }
     setSaving(false);
     if (error) { setErr(error.message); return; }
     onSaved();
@@ -892,6 +918,25 @@ function ProductModal({ branches, branchFilter, product, onClose, onSaved }: {
                 <Field label="Standard Cost"><input type="number" step="0.01" className={inputCls} value={form.standard_cost} onChange={e => setForm({ ...form, standard_cost: Number(e.target.value) })} /></Field>
                 <Field label="Selling Price"><input type="number" step="0.01" className={inputCls} value={form.selling_price} onChange={e => setForm({ ...form, selling_price: Number(e.target.value) })} /></Field>
                 <Field label="Suggested Price"><input type="number" step="0.01" className={inputCls} value={form.suggested_selling_price} onChange={e => setForm({ ...form, suggested_selling_price: Number(e.target.value) })} /></Field>
+              </div>
+
+              {/* Average cost drives inventory value, variance value and profit —
+                  not standard cost. It is normally calculated from received
+                  purchase orders, but there was no way to set it for stock that
+                  arrived through an adjustment, leaving it at zero. */}
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <Field label="Average Cost">
+                  <input type="number" step="0.01" className={inputCls}
+                    value={form.average_cost}
+                    onChange={e => setForm({ ...form, average_cost: Number(e.target.value) })} />
+                </Field>
+                <div className="md:col-span-2 flex items-start">
+                  <p className="text-[11px] text-slate-400 leading-relaxed mt-6">
+                    Used for inventory value, variance value and profit. Normally recalculated when a
+                    purchase order is received — set it here only for stock that arrived without a
+                    recorded cost. Changes are written to the inventory transaction log.
+                  </p>
+                </div>
               </div>
             </div>
             <div className="border-t border-slate-100 pt-4">

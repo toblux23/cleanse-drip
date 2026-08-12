@@ -477,75 +477,57 @@ export default function BookingForm() {
     };
 
     // Resolve or create a client record so the intake appears in Client Management.
-    // Reuses the same duplicate-check order (email → phone) and payload shape as
-    // the manual booking flow in ManualEntryModal.createNewClient.
-    let clientId: string | null = null;
+    // This runs as the anon role, which has no read access to clients or
+    // client_profiles — both hold medical data. The duplicate check (email →
+    // phone), the client insert and the profile write therefore happen inside
+    // intake_upsert_client_and_profile, a SECURITY DEFINER function that returns
+    // only the client id. Same order and same payload as before; an existing
+    // client is matched and its profile left untouched.
     const email = s1.email.trim();
     const phone = s1.phone.trim();
 
-    console.log('[Intake] Step: Duplicate lookup', { email, phone });
-    if (email) {
-      const { data: byEmail, error: byEmailErr } = await supabase.from('clients').select('id')
-        .ilike('email', email).maybeSingle();
-      if (byEmailErr) console.error('[Intake] Duplicate lookup by email failed:', byEmailErr);
-      if (byEmail?.id) clientId = byEmail.id;
-    }
-    if (!clientId && phone) {
-      const { data: byPhone, error: byPhoneErr } = await supabase.from('clients').select('id')
-        .eq('phone', phone).maybeSingle();
-      if (byPhoneErr) console.error('[Intake] Duplicate lookup by phone failed:', byPhoneErr);
-      if (byPhone?.id) clientId = byPhone.id;
-    }
-    console.log('[Intake] Duplicate lookup result:', { clientId });
-
-    if (!clientId) {
-      console.log('[Intake] Step: Client insert');
-      const { data: newClient, error: clientErr } = await supabase.from('clients')
-        .insert({
+    console.log('[Intake] Step: Resolve client', { email, phone });
+    const { data: resolvedClientId, error: clientErr } = await supabase.rpc(
+      'intake_upsert_client_and_profile',
+      {
+        p_client: {
           full_name: s1.full_name.trim(),
           email: email || null,
           phone: phone || null,
           address: s1.address.trim() || null,
-          health_notes: null,
-          status: 'active',
-          updated_at: new Date().toISOString(),
-        })
-        .select('id')
-        .single();
-      if (clientErr || !newClient) {
-        console.error('[Intake] Client insert failed:', clientErr);
-        setSubmitting(false);
-        setError('Something went wrong. Please try again.');
-        return;
-      }
-      clientId = newClient.id;
-      console.log('[Intake] Client insert success:', { clientId });
+        },
+        p_profile: {
+          date_of_birth: s1.birthday || null,
+          age: s1.age ? parseInt(s1.age, 10) : null,
+          gender: s1.gender || null,
+          emergency_contact_name: s2.emergency_name.trim() || null,
+          emergency_contact_number: s2.emergency_phone.trim() || null,
+          allergies: combineYesNoSpecify(s2.allergies, s2.allergies_detail) || null,
+          current_medications: combineYesNoSpecify(s2.medications, s2.medications_detail) || null,
+          pregnancy_breastfeeding: s2.pregnant || null,
+          pre_existing_conditions: combineYesNoSpecify(s2.pre_existing, s2.pre_existing_detail) || null,
+          bleeding_disorders: s2.bleeding || null,
+          family_history: s2.family_history,
+          weight: s2.weight.trim() || null,
+          smoking_vaping: s3.smoking || null,
+          alcohol_consumption: s3.alcohol || null,
+          exercise_frequency: s3.exercise || null,
+          water_intake: s3.water_intake || null,
+          consent_given: true,
+          consent_date: new Date().toISOString(),
+        },
+      },
+    );
 
-      console.log('[Intake] Step: Profile upsert');
-      const { error: profErr } = await supabase.from('client_profiles').upsert({
-        client_id: newClient.id,
-        date_of_birth: s1.birthday || null,
-        age: s1.age ? parseInt(s1.age, 10) : null,
-        gender: s1.gender || null,
-        emergency_contact_name: s2.emergency_name.trim() || null,
-        emergency_contact_number: s2.emergency_phone.trim() || null,
-        allergies: combineYesNoSpecify(s2.allergies, s2.allergies_detail) || null,
-        current_medications: combineYesNoSpecify(s2.medications, s2.medications_detail) || null,
-        pregnancy_breastfeeding: s2.pregnant || null,
-        pre_existing_conditions: combineYesNoSpecify(s2.pre_existing, s2.pre_existing_detail) || null,
-        bleeding_disorders: s2.bleeding || null,
-        family_history: s2.family_history,
-        weight: s2.weight.trim() || null,
-        smoking_vaping: s3.smoking || null,
-        alcohol_consumption: s3.alcohol || null,
-        exercise_frequency: s3.exercise || null,
-        water_intake: s3.water_intake || null,
-        consent_given: true,
-        consent_date: new Date().toISOString(),
-      }, { onConflict: 'client_id' });
-      if (profErr) console.error('[Intake] Profile upsert failed:', profErr);
-      else console.log('[Intake] Profile upsert success');
+    if (clientErr || !resolvedClientId) {
+      console.error('[Intake] Client resolve failed:', clientErr);
+      setSubmitting(false);
+      setError('Something went wrong. Please try again.');
+      return;
     }
+
+    const clientId: string = resolvedClientId as string;
+    console.log('[Intake] Client resolved:', { clientId });
 
     console.log('[Intake] Step: Booking insert', { clientId });
     const { error: dbError } = await supabase.from('client_bookings').insert({ ...payload, client_id: clientId });

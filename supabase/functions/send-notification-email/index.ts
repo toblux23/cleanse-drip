@@ -494,6 +494,46 @@ Deno.serve(async (req: Request) => {
     let recipients: { email: string }[];
 
     if (to && to.length > 0) {
+      // A caller-supplied recipient list turns this function into an email relay
+      // sending from the clinic's own SMTP identity, so it requires an approved
+      // team member. The anon key alone satisfies verify_jwt and is public, so
+      // the bearer token must resolve to a real user — not just parse.
+      const authHeader = req.headers.get("Authorization");
+      if (!authHeader) {
+        return new Response(
+          JSON.stringify({ error: "Missing authorization header" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      const caller = createClient(
+        Deno.env.get("SUPABASE_URL") ?? "",
+        Deno.env.get("SUPABASE_ANON_KEY") ?? "",
+        { global: { headers: { Authorization: authHeader } } },
+      );
+
+      const { data: { user }, error: userErr } = await caller.auth.getUser();
+      if (userErr || !user) {
+        return new Response(
+          JSON.stringify({ error: "Unauthorized" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      const { data: member } = await caller
+        .from("team_members")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("status", "approved")
+        .maybeSingle();
+
+      if (!member) {
+        return new Response(
+          JSON.stringify({ error: "Permission denied: approved team member required." }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
       recipients = to.map(email => ({ email }));
     } else if (type === "feedback_request" || type === "booking_confirmation" || type === "appointment_completed") {
       // feedback_request, booking_confirmation, and appointment_completed must always supply a `to` address

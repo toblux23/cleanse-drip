@@ -21,3 +21,7 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# One-off SQL bundle for applying pending migrations; not part of the repo
+APPLY_ALL.sql
+APPLY_AVERAGE_COST.sql

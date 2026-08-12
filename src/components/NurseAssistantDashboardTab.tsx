@@ -277,14 +277,10 @@ export default function NurseAssistantDashboardTab({ userEmail, memberBranchId, 
                   transaction_reference: appt.payment_reference ?? '—',
                 },
               };
-              fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-notification-email`, {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(emailBody),
-              }).catch((e) => console.error('[Appointment Completed Email] Failed to send:', e));
+              // invoke() sends the signed-in user's token; the function requires an
+              // approved team member before it will honour a `to` address.
+              supabase.functions.invoke('send-notification-email', { body: emailBody })
+                .catch((e) => console.error('[Appointment Completed Email] Failed to send:', e));
             } else {
               console.warn('[Appointment Completed Email] Skipped: no client email for booking', booking.id);
             }
@@ -340,14 +336,10 @@ export default function NurseAssistantDashboardTab({ userEmail, memberBranchId, 
             transaction_reference: appt.payment_reference ?? '—',
           },
         };
-        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-notification-email`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(emailBody),
-        }).catch((e) => console.error('[Appointment Completed Email] Failed to send:', e));
+        // invoke() sends the signed-in user's token; the function requires an
+        // approved team member before it will honour a `to` address.
+        supabase.functions.invoke('send-notification-email', { body: emailBody })
+          .catch((e) => console.error('[Appointment Completed Email] Failed to send:', e));
       }
     }
   }

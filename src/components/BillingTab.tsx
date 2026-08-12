@@ -445,25 +445,19 @@ function RecordPaymentModal({
           if (apptId) urlParams.set('appointment_id', apptId);
           const feedbackUrl = `${window.location.origin}/?${urlParams.toString()}#feedback`;
 
-          fetch(
-            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-notification-email`,
-            {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-                'Content-Type': 'application/json',
+          // invoke() sends the signed-in user's token; the function requires an
+          // approved team member before it will honour a `to` address.
+          supabase.functions.invoke('send-notification-email', {
+            body: {
+              type: 'feedback_request',
+              data: {
+                client_name: clientAR.full_name,
+                service_name: order.description ?? 'your recent session',
+                feedback_url: feedbackUrl,
               },
-              body: JSON.stringify({
-                type: 'feedback_request',
-                data: {
-                  client_name: clientAR.full_name,
-                  service_name: order.description ?? 'your recent session',
-                  feedback_url: feedbackUrl,
-                },
-                to: [clientAR.email],
-              }),
+              to: [clientAR.email],
             },
-          ).catch(() => {});
+          }).catch(() => {});
         }
       }
     }
