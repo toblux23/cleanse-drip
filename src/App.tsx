@@ -41,11 +41,15 @@ export default function App() {
   }, []);
 
   async function fetchMember(userId: string) {
-    const { data } = await supabase
+    const { data: rawData } = await supabase
       .from('team_members')
       .select('*')
       .eq('user_id', userId)
       .maybeSingle();
+    // Defense in depth: the server should never return a row for a different
+    // user_id than requested, but don't trust a mismatched row as "self" if it
+    // ever does — that row's role/status must never drive this session's permissions.
+    const data = rawData && rawData.user_id === userId ? rawData : null;
     setMemberRecord(data);
 
     if (data?.role && data.status === 'approved') {
