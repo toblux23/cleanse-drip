@@ -553,6 +553,9 @@ function ProductsSubTab({ branches, branchFilter, canManage, canDelete }: { bran
   const [products, setProducts] = useState<InventoryProductSummary[]>([]);
   const [suppliers, setSuppliers] = useState<InventorySupplier[]>([]);
   const [loading, setLoading] = useState(true);
+  // Write failures used to be discarded, so a deactivation that did not happen
+  // looked the same as one that did.
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [showAdd, setShowAdd] = useState(false);
@@ -601,6 +604,12 @@ function ProductsSubTab({ branches, branchFilter, canManage, canDelete }: { bran
 
   return (
     <div className="space-y-4">
+      {actionErr && (
+        <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+          <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-red-700">{actionErr}</p>
+        </div>
+      )}
       {/* Toolbar */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
@@ -729,7 +738,12 @@ function ProductsSubTab({ branches, branchFilter, canManage, canDelete }: { bran
       {initialStockFor && <InitialStockModal product={initialStockFor} branches={branches} onClose={() => setInitialStockFor(null)} onSaved={() => { setInitialStockFor(null); load(); }} />}
       {viewing && <ProductDetailsModal product={viewing} branches={branches} onClose={() => setViewing(null)} onAdjust={() => { setAdjusting(viewing); setViewing(null); }} onInitialStock={() => { setInitialStockFor(viewing); setViewing(null); }} />}
       {deleteTarget && <DeleteConfirmModal name={deleteTarget.name} onClose={() => setDeleteTarget(null)} onConfirm={async () => {
-        await supabase.from('inventory_products').update({ is_active: false }).eq('id', deleteTarget.id);
+        const { error: deactivateErr } = await supabase.from('inventory_products').update({ is_active: false }).eq('id', deleteTarget.id);
+        if (deactivateErr) {
+          console.error('Product deactivation failed:', deactivateErr);
+          setActionErr(`Could not deactivate ${deleteTarget.name}: ${deactivateErr.message}`);
+          return;
+        }
         setDeleteTarget(null); load();
       }} />}
     </div>
@@ -1304,6 +1318,7 @@ function BatchModal({ products, suppliers, branches, branchFilter, onClose, onSa
 // ─── Recipes Sub-Tab ────────────────────────────────────────────────────────
 
 function RecipesSubTab({ canManage }: { canManage: boolean }) {
+  const [recipeErr, setRecipeErr] = useState<string | null>(null);
   const [recipes, setRecipes] = useState<TreatmentRecipe[]>([]);
   const [products, setProducts] = useState<InventoryProduct[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1331,12 +1346,24 @@ function RecipesSubTab({ canManage }: { canManage: boolean }) {
   }
 
   async function deleteItem(itemId: string) {
-    await supabase.from('treatment_recipe_items').delete().eq('id', itemId);
+    const { error: delErr } = await supabase.from('treatment_recipe_items').delete().eq('id', itemId);
+    if (delErr) {
+      console.error('Recipe component delete failed:', delErr);
+      setRecipeErr(`Could not remove that component: ${delErr.message}`);
+      return;
+    }
+    setRecipeErr(null);
     if (selectedRecipe) loadItems(selectedRecipe.id);
   }
 
   return (
     <div className="space-y-4">
+      {recipeErr && (
+        <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+          <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-red-700">{recipeErr}</p>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-500">Treatment recipes for automatic inventory deduction</p>
         {canManage && (
@@ -1696,6 +1723,7 @@ function PurchaseOrderDetail({ po, products, canPurchase, onClose, onChanged }: 
 }) {
   const [items, setItems] = useState<InventoryPurchaseOrderItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [poErr, setPoErr] = useState<string | null>(null);
   const [receivingItem, setReceivingItem] = useState<InventoryPurchaseOrderItem | null>(null);
 
   const load = useCallback(async () => {
@@ -1708,13 +1736,25 @@ function PurchaseOrderDetail({ po, products, canPurchase, onClose, onChanged }: 
   useEffect(() => { load(); }, [load]);
 
   async function updateStatus(status: string) {
-    await supabase.from('inventory_purchase_orders').update({ status }).eq('id', po.id);
+    const { error: statusErr } = await supabase.from('inventory_purchase_orders').update({ status }).eq('id', po.id);
+    if (statusErr) {
+      console.error('Purchase order status update failed:', statusErr);
+      setPoErr(`Could not set the status to ${status}: ${statusErr.message}`);
+      return;
+    }
+    setPoErr(null);
     onChanged();
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        {poErr && (
+          <div className="m-4 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+            <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-red-700">{poErr}</p>
+          </div>
+        )}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
           <div>
             <h3 className="text-base font-bold text-slate-800">{po.po_number}</h3>
