@@ -26,9 +26,15 @@ export default function App() {
   const [permissions, setPermissions] = useState<Set<string>>(new Set());
   const [authChecked, setAuthChecked] = useState(false);
 
-  // Sync view → hash
+  // Sync view → hash. Only rewrite when actually navigating to a different
+  // view — a query string already on the current view's hash (e.g. an
+  // appointment_id from a QR-scanned consent/feedback link) must survive
+  // reload, or ConsentForm/FeedbackForm lose it on their very next re-render.
   useEffect(() => {
-    window.location.hash = view;
+    const currentRoute = window.location.hash.replace('#', '').split('?')[0];
+    if (currentRoute !== view) {
+      window.location.hash = view;
+    }
   }, [view]);
 
   // Browser back/forward support
