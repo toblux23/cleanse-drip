@@ -11,6 +11,42 @@ type SlotRow = {
   status: SlotStatus;
 };
 
+const DEFAULT_ACCENT = '#0d9488'; // Tailwind teal-600, the widget's default look
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+// Reads ?accent=, ?bg=, ?hideLogo= from the embedding page's chosen iframe src
+// so a third-party site can restyle the widget to match its own brand without
+// us needing to trust anything from them beyond a color code — a cross-origin
+// iframe can't be reached into with CSS/JS from the parent page anyway, so
+// query params on the src URL are the standard, safe way to do this.
+//
+// Every value is strictly validated before use: colors must match a plain
+// #rrggbb hex pattern (or the literal word "transparent" for ?bg), and
+// booleans are compared against a fixed set of truthy strings. Nothing here
+// is ever concatenated into a style string or HTML — values only ever reach
+// a CSS custom property or a React boolean, so there's no way an embedder
+// (or anyone editing the iframe src) can inject CSS/JS through these.
+function readCustomization() {
+  const params = new URLSearchParams(window.location.search);
+
+  const rawAccent = params.get('accent');
+  const accent = rawAccent && HEX_COLOR.test(`#${rawAccent.replace(/^#/, '')}`)
+    ? `#${rawAccent.replace(/^#/, '')}`
+    : DEFAULT_ACCENT;
+
+  const rawBg = params.get('bg');
+  const background = rawBg === 'transparent'
+    ? 'transparent'
+    : rawBg && HEX_COLOR.test(`#${rawBg.replace(/^#/, '')}`)
+    ? `#${rawBg.replace(/^#/, '')}`
+    : '#ffffff';
+
+  const hideLogo = ['1', 'true', 'yes'].includes((params.get('hideLogo') ?? '').toLowerCase());
+  const compact = ['1', 'true', 'yes'].includes((params.get('compact') ?? '').toLowerCase());
+
+  return { accent, background, hideLogo, compact };
+}
+
 function ymd(d: Date): string {
   return d.toISOString().split('T')[0];
 }
@@ -29,6 +65,7 @@ function formatTime(slotTime: string, label: string | null): string {
 // dates/times are open. Deliberately renders with no app nav/chrome so it
 // looks native wherever it's embedded.
 export default function AvailabilityCalendar() {
+  const [{ accent, background, hideLogo, compact }] = useState(readCustomization);
   const [monthCursor, setMonthCursor] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -90,20 +127,34 @@ export default function AvailabilityCalendar() {
   }, [monthCursor]);
 
   const monthLabel = monthCursor.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const pad = compact ? 'p-2 sm:p-3' : 'p-3 sm:p-6';
+  const dayPad = compact ? 'py-2' : 'py-3';
 
   return (
-    <div className="min-h-screen bg-white flex items-start justify-center p-3 sm:p-6">
+    // The --accent custom property drives every customizable color below via
+    // color-mix()/var() in either inline styles or the <style> block — nothing
+    // here builds a CSS/HTML string out of it, so the strict hex validation
+    // above is the only gate this ever needs.
+    <div
+      className={`min-h-screen flex items-start justify-center ${pad}`}
+      style={{ ['--accent' as string]: accent, background }}
+    >
+      <style>{`
+        .cd-day:hover:not(:disabled) { background-color: color-mix(in srgb, var(--accent) 10%, white); }
+      `}</style>
       <div className="w-full max-w-md">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="w-7 h-7 bg-gradient-to-br from-teal-400 to-cyan-500 rounded-lg flex items-center justify-center shadow-sm flex-shrink-0">
-            <Droplets className="w-3.5 h-3.5 text-white" />
+        {!hideLogo && (
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-7 h-7 bg-gradient-to-br from-teal-400 to-cyan-500 rounded-lg flex items-center justify-center shadow-sm flex-shrink-0">
+              <Droplets className="w-3.5 h-3.5 text-white" />
+            </div>
+            <p className="font-bold text-sm text-slate-800">Cleanse &amp; Drip — Availability</p>
           </div>
-          <p className="font-bold text-sm text-slate-800">Cleanse &amp; Drip — Availability</p>
-        </div>
+        )}
 
-        <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+        <div className={`border border-slate-200 rounded-2xl overflow-hidden shadow-sm ${background === 'transparent' ? '' : 'bg-white'}`}>
           {/* Month header */}
-          <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-200">
+          <div className={`flex items-center justify-between px-4 ${dayPad} bg-slate-50 border-b border-slate-200`}>
             <button
               type="button"
               aria-label="Previous month"
@@ -131,7 +182,7 @@ export default function AvailabilityCalendar() {
           </div>
 
           {/* Day grid */}
-          <div className="grid grid-cols-7 gap-1 px-2 pb-3">
+          <div className={`grid grid-cols-7 gap-1 px-2 ${compact ? 'pb-2' : 'pb-3'}`}>
             {gridDays.map((day, i) => {
               if (!day) return <div key={i} />;
               const isPast = day < todayStr;
@@ -144,20 +195,22 @@ export default function AvailabilityCalendar() {
                   type="button"
                   disabled={isPast}
                   onClick={() => setSelectedDate(day)}
-                  className={`aspect-square rounded-lg text-xs font-semibold flex flex-col items-center justify-center gap-0.5 transition-colors
+                  className={`cd-day aspect-square rounded-lg text-xs font-semibold flex flex-col items-center justify-center gap-0.5 transition-colors
                     ${isPast ? 'text-slate-300 cursor-not-allowed' : 'cursor-pointer'}
-                    ${isSelected ? 'bg-teal-600 text-white' : ''}
-                    ${!isSelected && !isPast && hasOpening ? 'text-slate-700 hover:bg-teal-50' : ''}
+                    ${!isSelected && !isPast && hasOpening ? 'text-slate-700' : ''}
                     ${!isSelected && !isPast && hasOpening === false ? 'text-slate-400 hover:bg-slate-50' : ''}
-                    ${isToday && !isSelected ? 'ring-1 ring-teal-400' : ''}
                   `}
+                  style={{
+                    backgroundColor: isSelected ? 'var(--accent)' : undefined,
+                    color: isSelected ? '#ffffff' : undefined,
+                    boxShadow: isToday && !isSelected ? 'inset 0 0 0 1px var(--accent)' : undefined,
+                  }}
                 >
                   <span>{Number(day.split('-')[2])}</span>
                   {!isPast && (
                     <span
-                      className={`w-1 h-1 rounded-full ${
-                        isSelected ? 'bg-white' : hasOpening ? 'bg-teal-500' : 'bg-slate-300'
-                      }`}
+                      className={`w-1 h-1 rounded-full ${isSelected ? 'bg-white' : !hasOpening ? 'bg-slate-300' : ''}`}
+                      style={{ backgroundColor: !isSelected && hasOpening ? 'var(--accent)' : undefined }}
                     />
                   )}
                 </button>
@@ -176,7 +229,10 @@ export default function AvailabilityCalendar() {
 
           {loading && (
             <div className="flex items-center justify-center py-10">
-              <div className="w-6 h-6 border-2 border-teal-600 border-t-transparent rounded-full animate-spin" />
+              <div
+                className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin"
+                style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }}
+              />
             </div>
           )}
 
@@ -193,11 +249,14 @@ export default function AvailabilityCalendar() {
                 return (
                   <div
                     key={s.slot_time}
-                    className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border
-                      ${isOpen
-                        ? 'bg-teal-50 border-teal-200 text-teal-700'
-                        : 'bg-slate-50 border-slate-200 text-slate-400 line-through'}
+                    className={`flex items-center gap-1.5 px-3 ${dayPad === 'py-2' ? 'py-1.5' : 'py-2'} rounded-lg text-xs font-semibold border
+                      ${isOpen ? '' : 'bg-slate-50 border-slate-200 text-slate-400 line-through'}
                     `}
+                    style={isOpen ? {
+                      backgroundColor: 'color-mix(in srgb, var(--accent) 8%, white)',
+                      borderColor: 'color-mix(in srgb, var(--accent) 30%, white)',
+                      color: 'var(--accent)',
+                    } : undefined}
                   >
                     <Clock className="w-3 h-3 flex-shrink-0" />
                     {formatTime(s.slot_time, s.label)}
