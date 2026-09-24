@@ -8,16 +8,14 @@ import ConsentForm from './components/ConsentForm';
 import Dashboard from './components/Dashboard';
 import Login from './components/Login';
 import PendingApproval from './components/PendingApproval';
-import AvailabilityCalendar from './components/AvailabilityCalendar';
 
-type View = 'booking' | 'feedback' | 'consent' | 'dashboard' | 'availability';
+type View = 'booking' | 'feedback' | 'consent' | 'dashboard';
 
 function hashToView(hash: string): View {
   const h = hash.replace('#', '').split('?')[0];
   if (h === 'feedback') return 'feedback';
   if (h === 'consent') return 'consent';
   if (h === 'dashboard') return 'dashboard';
-  if (h === 'availability') return 'availability';
   return 'booking';
 }
 
@@ -100,13 +98,6 @@ export default function App() {
 
   async function handleLogout() {
     await supabase.auth.signOut();
-  }
-
-  // Standalone, chrome-less: no nav bar, no auth check, no app branding beyond
-  // a small logo — meant to be embedded via <iframe> on a third-party site, so
-  // it should never require a login or display this app's internal navigation.
-  if (view === 'availability') {
-    return <AvailabilityCalendar />;
   }
 
   if (!authChecked) {

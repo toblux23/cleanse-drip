@@ -1,7 +1,24 @@
 {
   "headers": [
     {
-      "source": "/(.*)",
+      "source": "/availability.html",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://onqpfkvtkvnhdoqxplte.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        }
+      ]
+    },
+    {
+      "source": "/((?!availability\\.html).*)",
       "headers": [
         {
           "key": "Content-Security-Policy",
