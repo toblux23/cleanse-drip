@@ -1,0 +1,23 @@
+/* Deliberately no @tailwind base (Preflight): this file gets injected into a
+   third-party host page, and Preflight is a global reset (margins, button
+   styling, heading sizes, etc.) that would visibly alter the host's OTHER,
+   unrelated elements — not just this widget. Only pull in classes that are
+   actually used, scoped to wherever they're applied via className. */
+@tailwind components;
+@tailwind utilities;
+
+/* Scoped to .cd-widget only — not a global reset. Without this, a host page
+   with its own bare `button { ... }` rule bleeds into ours unintentionally
+   (confirmed: a host stylesheet styling every <button> on the page also
+   painted our calendar's day cells and nav arrows, since we don't otherwise
+   set background/border/padding on them and there's nothing to out-cascade).
+   This restores a predictable baseline while staying just as easy for a host
+   to override on purpose via a more specific .cd-day / .cd-nav-btn rule. */
+.cd-widget button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
