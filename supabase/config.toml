@@ -1,0 +1,13 @@
+# partner-api and partner-intake implement their own bearer-token auth scheme
+# (a hashed cd_live_... key, checked against the api_keys table inside the
+# function) instead of relying on a Supabase-issued JWT. Supabase's gateway
+# rejects any Authorization header that isn't a valid JWT before the function
+# code ever runs, so verify_jwt has to be off for these two specifically —
+# every other function (team-invite-member, team-delete-member,
+# send-notification-email) is called with the anon key as bearer, which *is*
+# a valid JWT, so they keep the default (verify_jwt = true).
+[functions.partner-api]
+verify_jwt = false
+
+[functions.partner-intake]
+verify_jwt = false
