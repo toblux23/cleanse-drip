@@ -1,10 +1,22 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
-// Server-to-server only, same reasoning as partner-api: no wildcard CORS,
-// since a partner backend doesn't send a browser preflight whose Origin
-// matters here.
-const jsonHeaders = { "Content-Type": "application/json" };
+// CORS enabled on this function by deliberate choice (2026-09-28): a
+// write:intake key is meant to be usable directly from a partner's own
+// browser-side form, not only their backend. That means the key sits in
+// client-visible JS wherever it's used this way — anyone with dev tools open
+// on that page can read it. Treat write:intake keys as closer to a
+// "publishable" key than a secret one: fine to embed in a page, but the
+// blast radius of one leaking is "someone can submit intake records," not
+// "someone can read other customers' data" (this key still can't do that —
+// see the scope check below). partner-api's read-scoped keys are unaffected
+// and remain server-to-server only.
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type",
+};
+const jsonHeaders = { "Content-Type": "application/json", ...corsHeaders };
 
 const RATE_LIMIT_PER_MINUTE = 30;
 
@@ -133,6 +145,10 @@ function validate(p: IntakePayload, activeServiceNames: Set<string>): Record<str
 }
 
 Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
   const url = new URL(req.url);
   const path = url.pathname.replace(/^.*\/partner-intake/, "") || "/";
 
