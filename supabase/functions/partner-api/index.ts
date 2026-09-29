@@ -88,6 +88,45 @@ Deno.serve(async (req: Request) => {
       return json({ error: "Method not allowed." }, 405);
     }
 
+    // ── Route: GET /clients?limit=&offset= ─────────────────────────────────
+    // Clients tied to at least one API-submitted booking (source LIKE
+    // 'api:%') — NOT every client in the system. Walk-ins and bookings made
+    // through the website stay excluded; this only surfaces people who came
+    // in through a partner integration in the first place. Distinct
+    // read:clients scope, granted separately from read:customers.
+    if (segments.length === 1 && segments[0] === "clients") {
+      if (!scopes.includes("read:clients")) {
+        statusForLog = 403;
+        return json({ error: "This key does not have the read:clients scope." }, 403);
+      }
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "50", 10) || 50, 1), 200);
+      const offset = Math.max(parseInt(url.searchParams.get("offset") ?? "0", 10) || 0, 0);
+
+      const { data: bookingRows, error: bookingErr } = await admin
+        .from("client_bookings")
+        .select("client_id")
+        .like("source", "api:%")
+        .not("client_id", "is", null);
+      if (bookingErr) throw bookingErr;
+
+      const clientIds = Array.from(new Set((bookingRows ?? []).map((r: { client_id: string }) => r.client_id)));
+      if (clientIds.length === 0) {
+        statusForLog = 200;
+        return json({ clients: [], total: 0, limit, offset });
+      }
+
+      const { data, error, count } = await admin
+        .from("clients")
+        .select("id, full_name, phone, email, status", { count: "exact" })
+        .in("id", clientIds)
+        .order("created_at", { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (error) throw error;
+      statusForLog = 200;
+      return json({ clients: data ?? [], total: count ?? 0, limit, offset });
+    }
+
     // ── Route: GET /customers?phone=...|email=... ─────────────────────────
     if (segments.length === 1 && segments[0] === "customers") {
       if (!scopes.includes("read:customers")) {
@@ -140,6 +179,33 @@ Deno.serve(async (req: Request) => {
       if (error) throw error;
       statusForLog = 200;
       return json({ appointments: data ?? [] });
+    }
+
+    // ── Route: GET /customers/{clientId}/bookings ──────────────────────────
+    // Full booking history for one customer — same table and fields as the
+    // upcoming-only route above, just without the date/status filter. Scoped
+    // the same as its sibling (read:customers), since it's the same class of
+    // exposure: everything tied to one already-known, confirmed customer.
+    if (segments.length === 3 && segments[0] === "customers" && segments[2] === "bookings") {
+      if (!scopes.includes("read:customers")) {
+        statusForLog = 403;
+        return json({ error: "This key does not have the read:customers scope." }, 403);
+      }
+      const clientId = segments[1];
+      if (!UUID_RE.test(clientId)) {
+        statusForLog = 400;
+        return json({ error: "Invalid customer id." }, 400);
+      }
+
+      const { data, error } = await admin
+        .from("appointments")
+        .select("id, service, scheduled_date, scheduled_time, location, status")
+        .eq("client_id", clientId)
+        .order("scheduled_date", { ascending: false });
+
+      if (error) throw error;
+      statusForLog = 200;
+      return json({ bookings: data ?? [] });
     }
 
     // ── Route: GET /appointments/{appointmentId} ───────────────────────────
