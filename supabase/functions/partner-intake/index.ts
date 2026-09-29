@@ -31,6 +31,16 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Only digits, spaces, dashes, parens, and a leading + are allowed characters
+// (rejects "hello", "abc123", etc.), and there must be 7-15 actual digits in
+// it (E.164's max is 15; 7 is a reasonable floor for even a short local
+// number) — rejects things like "----" that pass the character check alone.
+function isValidPhone(s: string): boolean {
+  if (!/^[+\d\s\-().]+$/.test(s)) return false;
+  const digits = s.replace(/\D/g, "");
+  return digits.length >= 7 && digits.length <= 15;
+}
 const GENDER_VALUES = ["Male", "Female", "Prefer not to say"];
 const YES_NO = ["Yes", "No"];
 const YES_NO_OTHER = ["Yes", "No", "Other"];
@@ -79,7 +89,7 @@ function validate(p: IntakePayload, activeServiceNames: Set<string>): Record<str
 
   if (!p.full_name?.trim()) errors.full_name = "Required";
   if (!p.email?.trim() || !EMAIL_RE.test(p.email.trim())) errors.email = "Valid email required";
-  if (!p.phone?.trim()) errors.phone = "Required";
+  if (!p.phone?.trim() || !isValidPhone(p.phone.trim())) errors.phone = "Valid phone number required (7-15 digits)";
   if (!p.age || !Number.isInteger(p.age) || p.age <= 0) errors.age = "Required, positive whole number";
   if (p.birthday) {
     const d = new Date(p.birthday);
@@ -98,7 +108,9 @@ function validate(p: IntakePayload, activeServiceNames: Set<string>): Record<str
   if (!p.appointment_time?.trim()) errors.appointment_time = "Required";
 
   if (!p.emergency_contact_name?.trim()) errors.emergency_contact_name = "Required";
-  if (!p.emergency_contact_phone?.trim()) errors.emergency_contact_phone = "Required";
+  if (!p.emergency_contact_phone?.trim() || !isValidPhone(p.emergency_contact_phone.trim())) {
+    errors.emergency_contact_phone = "Valid phone number required (7-15 digits)";
+  }
 
   if (!p.pregnant || !YES_NO.includes(p.pregnant)) errors.pregnant = "Must be Yes or No";
   if (!p.bleeding_disorders || !YES_NO.includes(p.bleeding_disorders)) errors.bleeding_disorders = "Must be Yes or No";
